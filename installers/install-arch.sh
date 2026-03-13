@@ -28,7 +28,7 @@ fi
 
 # ── packages ──────────────────────────────────────────────────
 echo "[*] Installing dependencies..."
-pacman -Sy --noconfirm --needed \
+pacman -Sy --needed \
     python python-pip \
     python-pyqt6 \
     tor \
