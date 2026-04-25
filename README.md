@@ -28,6 +28,15 @@ A graphical interface to control each privacy layer, monitor activity in real ti
   </tr>
 </table>
 
+<table>
+  <tr>
+    <th>Tray Icon</th>
+  </tr>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/berk-kucuk/entropy-shield/refs/heads/main/screenshots/tray_icon.png" alt="Disconnected state" width="420"/></td>
+  </tr>
+</table>
+
 ---
 
 ## What it does
