@@ -5,7 +5,7 @@
 <h1 align="center">Entropy Shield</h1>
 
 <p align="center">
-  A desktop application for Linux that routes your network traffic through Tor, DNSCrypt, and I2P.<br>
+  A desktop application for Linux that routes your network traffic through Tor, DNSCrypt, I2P and Lokinet.<br>
   Built with Python and PyQt6.
 </p>
 
@@ -44,6 +44,7 @@ A graphical interface to control each privacy layer, monitor activity in real ti
 - **Tor**: Routes all TCP traffic through the Tor network via transparent proxying. Your real IP address is hidden from the sites and services you connect to.
 - **DNSCrypt**: Encrypts and authenticates all DNS queries so your ISP cannot see or tamper with which hostnames you resolve.
 - **I2P**: Connects to the I2P anonymous overlay network via i2pd. Useful for accessing I2P-internal services (.i2p domains).
+- **Lokinet**: An onion-routing network using the LLARP protocol that operates at the network layer (Layer 3). It tunnels TCP, UDP, and ICMP traffic, providing high-speed access to .loki domains and clearnet exit nodes with lower latency than traditional overlays.
 
 You can enable any combination. When you press Connect, the application applies firewall rules (nftables or iptables) and starts the selected services. When you press Disconnect, everything is reversed and traffic flows normally again.
 
