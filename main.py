@@ -14,7 +14,11 @@ def _relaunch_as_root() -> None:
     env_fwd = []
     for var in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
                 "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
-                "QT_QPA_PLATFORM", "HOME"):
+                "QT_QPA_PLATFORM", "HOME",
+                # KDE Plasma tray için ekstra değişkenler
+                "KDE_FULL_SESSION", "KDE_SESSION_VERSION",
+                "DESKTOP_SESSION", "XDG_SESSION_TYPE",
+                "XDG_CURRENT_DESKTOP", "DBUS_SYSTEM_BUS_ADDRESS"):
         val = os.environ.get(var)
         if val:
             env_fwd.append(f"{var}={val}")
@@ -35,8 +39,13 @@ def main() -> None:
     if os.geteuid() != 0:
         _relaunch_as_root()
 
-    if not os.environ.get("QT_QPA_PLATFORM") and not os.environ.get("WAYLAND_DISPLAY"):
-        os.environ["QT_QPA_PLATFORM"] = "xcb"
+    # QT_QPA_PLATFORM'u sadece hiçbir display ortamı yoksa xcb'ye zorla.
+    # Wayland veya X11 zaten env'den geliyorsa dokunma — KDE tray buna bağlı.
+    if not os.environ.get("QT_QPA_PLATFORM"):
+        if os.environ.get("WAYLAND_DISPLAY"):
+            os.environ["QT_QPA_PLATFORM"] = "wayland"
+        elif os.environ.get("DISPLAY"):
+            os.environ["QT_QPA_PLATFORM"] = "xcb"
 
     from PyQt6.QtWidgets import QApplication
     from gui.main_window import MainWindow

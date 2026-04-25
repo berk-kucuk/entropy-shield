@@ -39,7 +39,8 @@ def _nft(script: str) -> None:
 
 def _nft_build(use_tor: bool, use_dnscrypt: bool,
                tor_trans: int, tor_dns: int, dns_port: int,
-               tor_uid: str | None) -> str:
+               tor_uid: str | None,
+               use_lokinet: bool = False) -> str:
     lines = [
         f"table ip {_NFT_TABLE} {{",
         "    chain output {",
@@ -64,6 +65,12 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
         lines.append(f"        udp dport 53 redirect to :{dns_port}")
         lines.append(f"        tcp dport 53 redirect to :{dns_port}")
 
+    elif use_lokinet:
+        # Lokinet'in dahili DNS resolver'ı 127.3.2.1:53
+        lines.append("        ip daddr 127.3.2.1 return")
+        lines.append("        udp dport 53 dnat to 127.3.2.1:53")
+        lines.append("        tcp dport 53 dnat to 127.3.2.1:53")
+
     lines += ["    }", "}"]
     return "\n".join(lines)
 
@@ -85,7 +92,8 @@ class FirewallManager:
         self._i2p_http: int = 4444
         self._backend: str = ""
 
-    def apply(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool) -> None:
+    def apply(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool,
+              use_lokinet: bool = False) -> None:
         self._log("[FW] Applying firewall rules...")
         self._backend = firewall_backend()
 
@@ -96,9 +104,11 @@ class FirewallManager:
         self._i2p_http = i2p_http
 
         if self._backend == "nftables":
-            self._apply_nft(use_tor, use_dnscrypt, tor_trans, tor_dns, dns_port)
+            self._apply_nft(use_tor, use_dnscrypt, tor_trans, tor_dns, dns_port,
+                            use_lokinet)
         else:
-            self._apply_ipt(use_tor, use_dnscrypt, tor_trans, tor_dns, dns_port)
+            self._apply_ipt(use_tor, use_dnscrypt, tor_trans, tor_dns, dns_port,
+                            use_lokinet)
 
         if use_i2p:
             self._set_proxy(True)
@@ -128,17 +138,18 @@ class FirewallManager:
     # ── nft ───────────────────────────────────────────────────
 
     def _apply_nft(self, use_tor: bool, use_dnscrypt: bool,
-                   tor_trans: int, tor_dns: int, dns_port: int) -> None:
+                   tor_trans: int, tor_dns: int, dns_port: int,
+                   use_lokinet: bool = False) -> None:
         # Remove any leftover table first
         subprocess.run(
             ["nft", "delete", "table", "ip", _NFT_TABLE],
             capture_output=True,
         )
-        if not (use_tor or use_dnscrypt):
+        if not (use_tor or use_dnscrypt or use_lokinet):
             return
         uid = _tor_uid() if use_tor else None
         script = _nft_build(use_tor, use_dnscrypt, tor_trans, tor_dns,
-                             dns_port, uid)
+                             dns_port, uid, use_lokinet)
         _nft(script)
 
     # ── iptables ──────────────────────────────────────────────
@@ -149,7 +160,8 @@ class FirewallManager:
             self._ipt_rules.append(list(args))
 
     def _apply_ipt(self, use_tor: bool, use_dnscrypt: bool,
-                   tor_trans: int, tor_dns: int, dns_port: int) -> None:
+                   tor_trans: int, tor_dns: int, dns_port: int,
+                   use_lokinet: bool = False) -> None:
         if use_tor:
             uid = _tor_uid()
             if uid:
@@ -178,6 +190,18 @@ class FirewallManager:
             self._ipt_add("-t", "nat", "-A", "OUTPUT",
                            "-p", "tcp", "--dport", "53",
                            "-j", "REDIRECT", "--to-ports", str(dns_port))
+
+        elif use_lokinet:
+            # Lokinet'in dahili DNS resolver'ı: 127.3.2.1:53
+            # Tüm DNS sorgularını bu adrese yönlendir
+            self._ipt_add("-t", "nat", "-A", "OUTPUT",
+                           "-p", "udp", "--dport", "53",
+                           "!", "-d", "127.3.2.1",
+                           "-j", "DNAT", "--to-destination", "127.3.2.1:53")
+            self._ipt_add("-t", "nat", "-A", "OUTPUT",
+                           "-p", "tcp", "--dport", "53",
+                           "!", "-d", "127.3.2.1",
+                           "-j", "DNAT", "--to-destination", "127.3.2.1:53")
 
     # ── gsettings proxy ───────────────────────────────────────
 

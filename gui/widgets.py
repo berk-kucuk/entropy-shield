@@ -217,6 +217,7 @@ _CARD_META: dict[str, tuple[str, str]] = {
     "tor":      ("TOR",      "Onion routing"),
     "dnscrypt": ("DNSCRYPT", "Encrypted DNS"),
     "i2p":      ("I2P",      "P2P overlay"),
+    "lokinet":  ("LOKINET",  "LLARP network"),
 }
 
 # Service-specific accent colors (r, g, b)
@@ -224,6 +225,7 @@ _CARD_COLORS: dict[str, tuple[int, int, int]] = {
     "tor":      (138, 110, 210),   # purple
     "dnscrypt": ( 78, 182, 255),   # blue
     "i2p":      ( 78, 210, 160),   # teal
+    "lokinet":  (255, 160,  60),   # orange
 }
 
 
@@ -344,4 +346,5 @@ _SERVICE_ICON: dict[str, str] = {
     "tor":      "⬡",
     "dnscrypt": "⊕",
     "i2p":      "◈",
+    "lokinet":  "⬢",
 }

@@ -25,6 +25,11 @@ _DEFAULTS: dict = {
         "socks_port":    4447,
         "max_bandwidth": 0,
     },
+    "lokinet": {
+        "socks_port": 1090,
+        "exit_node":  "",
+        "use_exit":   False,
+    },
 }
 
 

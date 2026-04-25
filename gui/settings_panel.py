@@ -117,6 +117,7 @@ class SettingsPanel(QWidget):
         self._tabs.addTab(self._tab_tor(),      "TOR")
         self._tabs.addTab(self._tab_dnscrypt(), "DNSCRYPT")
         self._tabs.addTab(self._tab_i2p(),      "I2P")
+        self._tabs.addTab(self._tab_lokinet(),  "LOKINET")
         self._tabs.addTab(self._tab_general(),  "GENERAL")
         return self._tabs
 
@@ -232,6 +233,37 @@ class SettingsPanel(QWidget):
         lay.addStretch()
         return w
 
+    def _tab_lokinet(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(14)
+
+        self._loki_socks   = self._spinbox(1024, 65535)
+        self._loki_exit    = QLineEdit()
+        self._loki_exit.setPlaceholderText("exit.loki  (boş = relay modu)")
+        self._loki_use_exit = ToggleSwitch(checked=False)
+
+        lay.addWidget(self._section("LOKINET"))
+        lay.addLayout(self._row("SOCKS Port", self._loki_socks))
+        lay.addSpacing(8)
+        lay.addWidget(self._section("EXIT NODE"))
+        lay.addLayout(self._row("Exit Node (.loki)", self._loki_exit))
+        lay.addLayout(self._row("Use Exit Node", self._loki_use_exit))
+
+        note = QLabel(
+            "Exit node etkinleştirilirse tüm trafik Lokinet\n"
+            "üzerinden yönlendirilir. Boş bırakılırsa relay\n"
+            "modunda çalışır (.loki domainlere erişim sağlar)."
+        )
+        note.setObjectName("settingLabel")
+        note.setWordWrap(True)
+        note.setStyleSheet("font-size:11px; opacity:0.7;")
+        lay.addSpacing(6)
+        lay.addWidget(note)
+        lay.addStretch()
+        return w
+
     def _tab_general(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -273,6 +305,10 @@ class SettingsPanel(QWidget):
         self._i2p_socks.setValue(cfg().get("i2p", "socks_port"))
         self._i2p_bw.setValue(cfg().get("i2p", "max_bandwidth"))
 
+        self._loki_socks.setValue(cfg().get("lokinet", "socks_port"))
+        self._loki_exit.setText(cfg().get("lokinet", "exit_node"))
+        self._loki_use_exit.setChecked(cfg().get("lokinet", "use_exit"), silent=True)
+
         self._theme_toggle.setChecked(cfg().get("theme") == "dark", silent=True)
 
     def _on_save(self) -> None:
@@ -290,6 +326,10 @@ class SettingsPanel(QWidget):
         cfg().set("i2p", "http_port",     self._i2p_http.value())
         cfg().set("i2p", "socks_port",    self._i2p_socks.value())
         cfg().set("i2p", "max_bandwidth", self._i2p_bw.value())
+
+        cfg().set("lokinet", "socks_port", self._loki_socks.value())
+        cfg().set("lokinet", "exit_node",  self._loki_exit.text().strip())
+        cfg().set("lokinet", "use_exit",   self._loki_use_exit.isChecked())
 
         theme_name = "dark" if self._theme_toggle.isChecked() else "light"
         cfg().set("theme", theme_name)
