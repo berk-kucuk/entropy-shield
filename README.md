@@ -1,317 +1,357 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/berk-kucuk/entropy-shield/main/logos/entropy-logo.png" width="120" alt="Entropy Shield logo" />
-</p>
+<div align="center">
 
-<h1 align="center">Entropy Shield</h1>
+### [🌐 entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)
 
-<p align="center">
-  A desktop application for Linux that routes your network traffic through Tor, DNSCrypt, I2P and Lokinet.<br>
-  Built with Python and PyQt6.
-</p>
+<br/>
+
+<img src="logos/entropy-logo.png" alt="Entropy Shield Logo" width="120" />
+
+# Entropy Shield
+
+**A modern Linux desktop privacy stack — Tor · DNSCrypt · I2P · Lokinet**
+
+[![Website](https://img.shields.io/badge/Website-entropy--shield.berkkucukk.com-0f172a?style=flat-square&logo=googlechrome&logoColor=white)](https://entropy-shield.berkkucukk.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![PyQt6](https://img.shields.io/badge/PyQt6-6.4%2B-41CD52?style=flat-square&logo=qt&logoColor=white)](https://pypi.org/project/PyQt6/)
+[![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black)](https://kernel.org)
+[![NixOS](https://img.shields.io/badge/NixOS-Ready-5277C3?style=flat-square&logo=nixos&logoColor=white)](https://nixos.org)
+
+<br/>
+
+<img src="screenshots/connected.png" alt="Entropy Shield — Connected" width="480" />
+
+*One-click control over your entire privacy layer stack.*
+
+</div>
 
 ---
 
-A graphical interface to control each privacy layer, monitor activity in real time, and configure service settings without touching configuration files manually.
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Privacy Layers](#privacy-layers)
+- [Screenshots](#screenshots)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Supported Distributions](#supported-distributions)
+- [License](#license)
+
+---
+
+## Overview
+
+Entropy Shield is a graphical frontend for managing multiple privacy and anonymity services on Linux. Instead of manually configuring `torrc`, writing nftables rules, and restarting daemons, Entropy Shield does it all through a single polished interface.
+
+It routes your traffic through whichever combination of layers you choose — Tor transparent proxy, encrypted DNS via DNSCrypt, the I2P anonymity network, or Lokinet — then tears everything back down cleanly when you disconnect. System configs are backed up before modification and restored on exit.
+
+> **Website:** [entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)
+
+---
+
+## Features
+
+| | Feature |
+|---|---|
+| 🔒 | **Layered privacy** — combine Tor, DNSCrypt, I2P, and Lokinet in any combination |
+| 🔥 | **Firewall integration** — nftables/iptables rules applied and removed automatically |
+| 🌙 | **Dark & Light themes** — polished animated UI with glowing status border |
+| 🗂️ | **System tray** — minimize to tray, disconnect or quit from the notification area |
+| ♻️ | **Zero footprint** — all config changes are backed up and reverted on disconnect |
+| ⚙️ | **Per-service settings** — configure ports, exit nodes, DNSSEC, bandwidth limits, and more |
+| 🐧 | **Multi-distro support** — one universal installer for Arch, Debian, Fedora, openSUSE, NixOS |
+| ❄️ | **NixOS native** — declarative NixOS module, no mutable config patching |
+
+---
+
+## Privacy Layers
+
+<table>
+<tr>
+<td align="center" width="25%">
+
+### 🧅 Tor
+
+Transparent proxy that routes **all TCP traffic** through the Tor network using nftables `REDIRECT` rules. DNS queries are redirected to Tor's `DNSPort`, preventing leaks. Supports custom exit nodes and `StrictNodes`.
+
+</td>
+<td align="center" width="25%">
+
+### 🔐 DNSCrypt
+
+Encrypts DNS queries using [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy). Enforces no-log and no-filter server requirements. Stops `systemd-resolved` temporarily to avoid port conflicts, restores it on disconnect.
+
+</td>
+<td align="center" width="25%">
+
+### 🌐 I2P
+
+Starts [i2pd](https://i2pd.website) and configures its HTTP proxy (`127.0.0.1:4444`) and SOCKS proxy (`127.0.0.1:4447`). When used together with Tor, I2P traffic is tunnelled through Tor's SOCKS port for additional anonymity.
+
+</td>
+<td align="center" width="25%">
+
+### 🦎 Lokinet
+
+Routes traffic through [Lokinet](https://lokinet.org), an onion-routing network built on the Oxen blockchain. Configurable SOCKS port and optional exit node selection.
+
+</td>
+</tr>
+</table>
 
 ---
 
 ## Screenshots
 
-<table>
-  <tr>
-    <th>Disconnected</th>
-    <th>Connected</th>
-  </tr>
-  <tr>
-    <td><img src="https://raw.githubusercontent.com/berk-kucuk/entropy-shield/main/screenshots/disconnected.png" alt="Disconnected state" width="420"/></td>
-    <td><img src="https://raw.githubusercontent.com/berk-kucuk/entropy-shield/main/screenshots/connected.png" alt="Connected state" width="420"/></td>
-  </tr>
-</table>
+<div align="center">
 
-<table>
-  <tr>
-    <th>Tray Icon</th>
-  </tr>
-  <tr>
-    <td><img src="https://raw.githubusercontent.com/berk-kucuk/entropy-shield/refs/heads/main/screenshots/tray_icon.png" alt="Disconnected state" width="420"/></td>
-  </tr>
-</table>
+| Protected | Disconnected |
+|:---:|:---:|
+| <img src="screenshots/connected.png" width="380" /> | <img src="screenshots/disconnected.png" width="380" /> |
+| All layers active — animated green glow | Idle state — select layers and connect |
 
----
-
-## What it does
-
-- **Tor**: Routes all TCP traffic through the Tor network via transparent proxying. Your real IP address is hidden from the sites and services you connect to.
-- **DNSCrypt**: Encrypts and authenticates all DNS queries so your ISP cannot see or tamper with which hostnames you resolve.
-- **I2P**: Connects to the I2P anonymous overlay network via i2pd. Useful for accessing I2P-internal services (.i2p domains).
-- **Lokinet**: An onion-routing network using the LLARP protocol that operates at the network layer (Layer 3). It tunnels TCP, UDP, and ICMP traffic, providing high-speed access to .loki domains and clearnet exit nodes with lower latency than traditional overlays.
-
-You can enable any combination. When you press Connect, the application applies firewall rules (nftables or iptables) and starts the selected services. When you press Disconnect, everything is reversed and traffic flows normally again.
-
-The application must run as root because it modifies firewall rules and network configuration. It uses `pkexec` (Polkit) to ask for your password — it does not run permanently as a system service.
-
----
-
-## Supported distributions
-
-| Distribution | Installer |
-|---|---|
-| Debian, Ubuntu, and derivatives | `installers/install-debian.sh` |
-| Fedora, RHEL, CentOS Stream | `installers/install-fedora.sh` |
-| Arch Linux, Manjaro, Endeavour | `installers/install-arch.sh` |
-| NixOS | `installers/install-nixos.sh` |
+</div>
 
 ---
 
 ## Requirements
 
-### All distributions
-- Python 3.10 or newer
-- PyQt6
-- Tor
-- dnscrypt-proxy
-- i2pd
-- nftables or iptables
-- Polkit (pkexec)
+- **OS:** Linux (systemd-based)
+- **Python:** 3.10 or later
+- **PyQt6:** 6.4 or later
+- **Privileges:** Root (via `pkexec` — polkit policy installed automatically)
 
-The installers handle all of these automatically.
+**Privacy service dependencies** (installed automatically by the installer):
 
-### NixOS only
-- An existing `services.tor.enable = true` entry in your `configuration.nix` is recommended but not required. The installer adds the necessary Tor port settings to your NixOS module.
-- `nixos-rebuild switch` is run automatically during installation.
+| Service | Package |
+|---|---|
+| Tor | `tor` |
+| DNSCrypt | `dnscrypt-proxy` |
+| I2P | `i2pd` |
+| Firewall | `nftables` / `iptables` |
 
 ---
 
 ## Installation
 
-### Clone or download the project
+### Universal Installer (Recommended)
 
-```
-git clone https://github.com/berk-kucuk/entropy-shield.git
+The universal installer automatically detects your distribution and installs all dependencies.
+
+```bash
+git clone https://github.com/berkkucukk/entropy-shield.git
 cd entropy-shield
+bash installers/install.sh
 ```
 
-Or download and extract the archive, then navigate into the folder.
+The installer handles everything:
+
+- Package installation per distro (pacman / apt / dnf / zypper / nix)
+- PyQt6 via system package with pip fallback (PEP 668 compliant)
+- Desktop entry, application icon, launcher wrapper at `/usr/local/bin/entropy-shield`
+- Polkit policy so `pkexec` works without repeated password prompts
+- SELinux context labels on Fedora / RHEL
+- NixOS module generation + `nixos-rebuild switch`
+
+> For an unrecognised distro, override detection: `DISTRO_ID=arch bash installers/install.sh`
 
 ---
 
-### Debian / Ubuntu
+### Distro-specific Installers
 
-```
-bash installers/install-debian.sh
-```
-
-The script will:
-1. Run `apt-get update` and install all required packages
-2. Copy the application to `/opt/entropy-shield`
-3. Create the `/usr/local/bin/entropy-shield` launcher
-4. Install the desktop entry and application icon
-5. Create a Polkit policy so the privilege prompt works correctly
-
----
-
-### Fedora
-
-```
-bash installers/install-fedora.sh
-```
-
-The script will:
-1. Install packages via `dnf`. dnscrypt-proxy and i2pd may come from Copr repositories if not available in the main repo. The script enables them automatically.
-2. Copy the application to `/opt/entropy-shield`
-3. Create the launcher, desktop entry, and icon
-4. Create a Polkit policy
-5. Apply SELinux context if SELinux is enforcing
-
----
-
-### Arch Linux
-
-```
+```bash
+# Arch Linux / Manjaro / EndeavourOS
 bash installers/install-arch.sh
-```
 
-The script will:
-1. Install packages via `pacman`. PyQt6 is installed from the official repos (`python-pyqt6`).
-2. Copy the application to `/opt/entropy-shield`
-3. Create the launcher, desktop entry, and icon
-4. Create a Polkit policy
+# Debian / Ubuntu / Linux Mint / Kali / Pop!_OS
+bash installers/install-debian.sh
 
----
+# Fedora / RHEL / AlmaLinux / Rocky Linux
+bash installers/install-fedora.sh
 
-### NixOS
-
-```
+# NixOS
 bash installers/install-nixos.sh
 ```
 
-NixOS installation is different from the others because the system is managed declaratively.
-
-The script will:
-1. Stop and disable any conflicting service instances from a previous install
-2. Copy the application to `/opt/entropy-shield`
-3. Write `/etc/nixos/entropy-shield.nix`, a NixOS module that:
-   - Provides Python with PyQt6, dnscrypt-proxy, and i2pd
-   - Defines systemd units for dnscrypt-proxy and i2pd **without** `wantedBy`, so they never start automatically at boot
-   - Adds Tor transparent proxy ports (`TransPort 9040`, `DNSPort 5300`) to your existing Tor configuration
-   - Adds a Polkit rule allowing the `wheel` group to run the app as root
-   - Registers the application in the KDE/GNOME application menu via `pkgs.makeDesktopItem`
-4. Patch `/etc/nixos/configuration.nix` to import `./entropy-shield.nix`
-5. Run `nixos-rebuild switch`
-
-A backup of your original `configuration.nix` is saved as `configuration.nix.entropy-shield.bak` the first time you install. Subsequent reinstalls preserve this backup.
-
-After installation, the `entropy-shield` command is available in your PATH via the Nix store.
-
 ---
-
-## Running the application
-
-After installation, you can launch Entropy Shield from your desktop application menu (look for it under Network or Security), or from the terminal:
-
-```
-entropy-shield
-```
-
-The application will ask for your password via a Polkit dialog on first run. This is required because it needs root access to configure firewall rules.
-
----
-
-## How to use
-
-1. Open the application.
-2. In the main window, use the toggle switches on each service card to select which layers you want to enable. All three are enabled by default.
-3. Press **Connect**. The application will start the selected services and apply firewall rules. The status ring in the center will turn green when the connection is active.
-4. To verify: open a DNS leak test site (for example dnsleaktest.com) and run an extended test. The DNS servers shown should not be your ISP's servers.
-5. Press **Disconnect** to stop all services and remove all firewall rules. Traffic returns to its normal path.
-
-### Layer combinations
-
-- **Tor only**: All TCP traffic is routed through Tor. DNS is resolved anonymously through Tor's internal DNS resolver.
-- **DNSCrypt only**: DNS queries are encrypted and authenticated. Your TCP connections still use your real IP. Use this if you want encrypted DNS without routing all traffic through Tor.
-- **Tor + DNSCrypt**: TCP traffic goes through Tor. DNS queries are encrypted by DNSCrypt rather than resolved through Tor's DNS port. This is the highest-privacy combination for most users.
-- **I2P**: Starts i2pd and sets your system HTTP proxy to `127.0.0.1:4444`. Used for accessing I2P-internal services. Can be combined with Tor.
-
----
-
-## Settings
-
-Click the gear button in the top right corner to open the settings panel. You can configure:
-
-- **Tor**: TransPort, DNSPort, SocksPort, exit node countries, StrictNodes
-- **DNSCrypt**: listen port, require DNSSEC, require no-log, require no-filter
-- **I2P**: HTTP proxy port, SOCKS proxy port, bandwidth limit
-- **Theme**: dark or light
-
-Settings are saved to `~/.config/entropy-shield/config.json`.
-
-On NixOS, service configuration files are managed by the NixOS module and are not modified at runtime. Port settings in the GUI still apply to how the firewall rules are constructed.
-
----
-
-## How it works internally
-
-### Firewall
-
-When you connect, the application writes firewall rules using nftables (preferred) or iptables as a fallback. On NixOS, nftables is always used since the system firewall is nftables-based.
-
-For Tor transparent proxying, an `ip entropy-shield` table is created with a `nat output` chain that:
-- Returns traffic from the Tor process itself (to prevent routing loops)
-- Returns traffic destined for local networks
-- Redirects all DNS (UDP/TCP port 53) to Tor's DNSPort or dnscrypt-proxy
-- Redirects all outgoing TCP SYN packets to Tor's TransPort
-
-For DNSCrypt only, only the DNS redirect rules are applied.
-
-When you disconnect, the `entropy-shield` table is deleted entirely.
-
-### DNS on NixOS
-
-NixOS may not run `systemd-resolved`. In this case, the nftables DNS redirect handles everything. If `systemd-resolved` is running, the application additionally configures it via `resolvectl` to route all queries through the active service, and creates a drop-in file at `/run/systemd/resolved.conf.d/entropy-shield.conf` that persists across NetworkManager reconnections.
-
----
-
-## Uninstallation
-
-### Debian / Fedora / Arch
-
-```
-sudo rm -rf /opt/entropy-shield
-sudo rm -f /usr/local/bin/entropy-shield
-sudo rm -f /usr/share/applications/entropy-shield.desktop
-sudo rm -f /usr/share/pixmaps/entropy-shield.png
-sudo rm -f /usr/share/icons/hicolor/256x256/apps/entropy-shield.png
-sudo rm -f /usr/share/polkit-1/actions/org.entropyshield.policy
-```
 
 ### NixOS
 
-1. Remove `./entropy-shield.nix` from the `imports` list in `/etc/nixos/configuration.nix`
-2. Delete the module file: `sudo rm /etc/nixos/entropy-shield.nix`
-3. Delete the application: `sudo rm -rf /opt/entropy-shield`
-4. Run `sudo nixos-rebuild switch`
+The NixOS installer writes a declarative module to `/etc/nixos/entropy-shield.nix` and patches `configuration.nix` to import it, then runs `nixos-rebuild switch`. Services are defined as on-demand systemd units with **no `wantedBy`** — they never auto-start at boot; Entropy Shield controls them entirely.
 
-Your original `configuration.nix` backup is at `/etc/nixos/configuration.nix.entropy-shield.bak` if you need to restore it.
-
----
-
-## Troubleshooting
-
-### The application does not appear in the application menu (NixOS)
-
-Run `kbuildsycoca6 --noincremental` as your normal user to force KDE to rebuild its application menu database. This usually resolves the issue immediately after installation.
-
-### "tor is not installed" or "dnscrypt-proxy is not installed"
-
-The service binary is not in PATH. On NixOS, this can happen if `nixos-rebuild switch` did not complete successfully. Run it manually: `sudo nixos-rebuild switch`. On other distributions, re-run the installer.
-
-### Traffic does not appear to go through Tor
-
-Check that the firewall rules are active: `sudo nft list table ip entropy-shield`. If the table does not exist, the rules were not applied. Look at the activity log inside the application for error messages.
-
-### DNS is not encrypted (DNSCrypt)
-
-Run `systemctl status dnscrypt-proxy` to confirm the service is active. Then run a DNS leak test. If your ISP's DNS still appears, check the activity log for errors during connection. On NixOS, also verify the dnscrypt-proxy config is present: `cat /etc/dnscrypt-proxy/dnscrypt-proxy.toml`.
-
-### The privilege dialog does not appear
-
-Ensure Polkit is running: `systemctl status polkit`. On NixOS, the installer adds a Polkit rule for the `wheel` group. Make sure your user is in the `wheel` group: `groups $USER`.
-
-### Internet connection lost after applying NixOS module
-
-This can happen if a previous installation left dnscrypt-proxy or i2pd running and interfering with system DNS. Re-run the installer — it will stop and clean up those services before reinstalling.
+```nix
+# Automatically added to /etc/nixos/configuration.nix:
+imports = [ ./entropy-shield.nix ];
+```
 
 ---
 
-## Project structure
+### Manual / Development
+
+```bash
+git clone https://github.com/berkkucukk/entropy-shield.git
+cd entropy-shield
+pip install PyQt6
+sudo python3 main.py
+```
+
+---
+
+## Usage
+
+Launch from the application menu or run:
+
+```bash
+entropy-shield
+```
+
+The application requests elevated privileges via `pkexec` on first launch. After the polkit policy is installed, subsequent launches authenticate transparently without a password dialog.
+
+**Workflow:**
+
+1. Toggle the service cards you want to activate (Tor, DNSCrypt, I2P, Lokinet)
+2. Click **CONNECT** — services start, firewall rules are applied, DNS is redirected
+3. The status ring turns green and the border glows to confirm protection is active
+4. Click **DISCONNECT** to stop all services and restore original system configuration
+
+**System tray:** Closing the window minimises to the system tray. Right-click the tray icon to show the window, disconnect, or quit.
+
+---
+
+## Configuration
+
+Settings are stored at `~/.config/entropy-shield/config.json` and can be edited through the in-app **Settings** panel (⚙ button in the top-right corner).
+
+<details>
+<summary>Default configuration</summary>
+
+```json
+{
+  "theme": "dark",
+  "tor": {
+    "trans_port": 9040,
+    "dns_port": 5300,
+    "socks_port": 9050,
+    "exit_nodes": "",
+    "strict_nodes": false
+  },
+  "dnscrypt": {
+    "port": 5300,
+    "require_dnssec": false,
+    "require_nolog": true,
+    "require_nofilter": true
+  },
+  "i2p": {
+    "http_port": 4444,
+    "socks_port": 4447,
+    "max_bandwidth": 0
+  },
+  "lokinet": {
+    "socks_port": 1090,
+    "exit_node": "",
+    "use_exit": false
+  }
+}
+```
+
+</details>
+
+### Tor Exit Nodes
+
+Restrict exit traffic to specific countries by entering ISO codes in **Settings → Tor**:
+
+```
+Exit Nodes:   {us},{de},{nl}
+Strict Nodes: ✓
+```
+
+### DNSCrypt Server Requirements
+
+| Option | Description |
+|---|---|
+| Require no-log | Only use resolvers that do not log queries |
+| Require no-filter | Exclude resolvers that apply content filtering |
+| Require DNSSEC | Only use DNSSEC-validating resolvers |
+
+---
+
+## Architecture
 
 ```
 entropy-shield/
-  main.py                  Entry point. Handles privilege escalation via pkexec.
-  logos/
-    entropy-logo.png       Application icon.
-  core/
-    config.py              JSON configuration singleton.
-    connection.py          Orchestrates connect/disconnect across all layers.
-    firewall.py            Applies and removes nftables/iptables rules.
-    tor.py                 Tor service lifecycle and configuration.
-    dnscrypt.py            DNSCrypt service lifecycle and configuration.
-    i2p.py                 I2P (i2pd) service lifecycle and configuration.
-    platform.py            OS detection and firewall backend selection.
-  gui/
-    main_window.py         Main application window.
-    widgets.py             Custom widgets: ToggleSwitch, ServiceCard, StatusRing, Spinner.
-    themes.py              Dark and light colour palettes and Qt stylesheets.
-    settings_panel.py      Slide-in settings panel.
-  installers/
-    install-debian.sh
-    install-fedora.sh
-    install-arch.sh
-    install-nixos.sh
+├── main.py                  # Entry point — privilege escalation via pkexec
+├── core/
+│   ├── config.py            # JSON config with deep-merge defaults
+│   ├── connection.py        # Orchestrates all layers (connect / disconnect)
+│   ├── tor.py               # torrc patching, DNS redirect, systemd control
+│   ├── dnscrypt.py          # dnscrypt-proxy config, resolved integration
+│   ├── i2p.py               # i2pd config, Tor-tunnel mode
+│   ├── lokinet.py           # Lokinet SOCKS proxy management
+│   ├── firewall.py          # nftables / iptables transparent proxy rules
+│   ├── tray_helper.py       # System tray subprocess (runs as real user)
+│   └── platform.py          # NixOS detection
+├── gui/
+│   ├── main_window.py       # Main window, animated glow border, worker thread
+│   ├── settings_panel.py    # Slide-in settings overlay
+│   ├── themes.py            # Dark / Light theme palette + QSS generation
+│   └── widgets.py           # ServiceCard, StatusRing, Spinner
+├── logos/
+│   └── entropy-logo.png
+├── screenshots/
+└── installers/
+    ├── install.sh           # Universal distro-detecting installer
+    ├── install-arch.sh
+    ├── install-debian.sh
+    ├── install-fedora.sh
+    └── install-nixos.sh
 ```
+
+### How it works
+
+Entropy Shield runs as root (via `pkexec`) to manage system services and firewall rules. The system tray helper is launched as a subprocess under the original user's session to access the D-Bus session bus and register the SNI tray icon — this avoids the common problem where root processes cannot reach the user's display server or notification area.
+
+**CONNECT flow:**
+
+1. Selected service configs are patched (originals backed up with `.entropy-shield.bak` suffix)
+2. Services are started via `systemctl restart`
+3. `FirewallManager` applies nftables rules to redirect all TCP through the transparent proxy
+4. DNS is redirected through the active service's local listener port
+
+**DISCONNECT flow:**
+
+1. Firewall rules are flushed
+2. All started services are stopped
+3. Config files are restored from backup
+4. DNS and `systemd-resolved` are restored to their pre-connection state
+
+---
+
+## Supported Distributions
+
+| Distribution | Package Manager | Notes |
+|---|---|---|
+| Arch Linux, Manjaro, EndeavourOS, Garuda | `pacman` | All packages in official repos |
+| Debian, Ubuntu, Linux Mint, Kali, Pop!\_OS, Zorin | `apt` | i2pd may require a third-party repo |
+| Fedora, RHEL, AlmaLinux, Rocky Linux | `dnf` | dnscrypt-proxy / i2pd via Copr if absent from main repo |
+| openSUSE Leap / Tumbleweed | `zypper` | |
+| NixOS | `nixos-rebuild` | Declarative module — no mutable config files |
 
 ---
 
 ## License
 
-This project is released under the MIT License.
+MIT © [Berk Küçük](https://berkkucukk.com)
+
+---
+
+<div align="center">
+
+**[entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)**
+
+<sub>Built with Python · PyQt6 · Tor · DNSCrypt · I2P · Lokinet</sub>
+
+</div>

@@ -13,6 +13,9 @@ TORRC_BAK  = "/etc/tor/torrc.entropy-shield.bak"
 RESOLV     = "/etc/resolv.conf"
 RESOLV_BAK = "/etc/resolv.conf.entropy-shield.bak"
 
+_MARKER_BEGIN = "# --- entropy-shield-begin ---"
+_MARKER_END   = "# --- entropy-shield-end ---"
+
 _TORRC_TEMPLATE = """
 # --- entropy-shield-begin ---
 VirtualAddrNetworkIPv4 10.192.0.0/10
@@ -66,9 +69,10 @@ class TorManager:
         with open(TORRC, "r") as f:
             content = f.read()
 
-        if "entropy-shield-begin" not in content:
-            with open(TORRC, "a") as f:
-                f.write(block)
+        content = self._strip_block(content)
+        with open(TORRC, "w") as f:
+            f.write(content)
+            f.write(block)
 
         if not os.path.exists(RESOLV_BAK):
             shutil.copy2(RESOLV, RESOLV_BAK)
@@ -104,6 +108,21 @@ class TorManager:
             subprocess.run(["systemctl", "start", "tor"], capture_output=True)
 
         self._log("[TOR] Tor stopped and config restored.")
+
+    def _strip_block(self, content: str) -> str:
+        lines  = content.splitlines(keepends=True)
+        out    = []
+        inside = False
+        for line in lines:
+            if line.strip() == _MARKER_BEGIN:
+                inside = True
+                continue
+            if line.strip() == _MARKER_END:
+                inside = False
+                continue
+            if not inside:
+                out.append(line)
+        return "".join(out)
 
     # ── NixOS public DNS control ─────────────────────────────────
 
@@ -213,7 +232,7 @@ class TorManager:
             r2 = subprocess.run(["service", name, "restart"],
                                 capture_output=True, text=True)
             if r2.returncode != 0:
-                raise RuntimeError(f"Failed to start {name}: {r.stderr.strip()}")
+                raise RuntimeError(f"Failed to start {name}: {r2.stderr.strip()}")
 
     def _wait_active(self, name: str, timeout: int = 30) -> None:
         for _ in range(timeout):

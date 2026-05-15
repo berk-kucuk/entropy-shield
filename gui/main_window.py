@@ -138,14 +138,16 @@ class MainWindow(QMainWindow):
         if os.path.exists(_LOGO_PATH):
             self.setWindowIcon(QIcon(_LOGO_PATH))
 
-        self.setMinimumSize(540, 620)
-        self.resize(540, 620)
+        self.setMinimumSize(560, 670)
+        self.resize(560, 670)
 
         self._connected     = False
         self._worker: _Worker | None = None
         self._mgr           = ConnectionManager(lambda _: None)
         self._active_layers: list[str] = []
         self._tray_proc: subprocess.Popen | None = None
+        self._tray_username: str = ""
+        self._quitting: bool = False
 
         # Glow animation state
         self._glow_state  = "off"
@@ -175,9 +177,8 @@ class MainWindow(QMainWindow):
         else:
             self._pulse_timer.stop()
             self._glow_alpha = 0.85 if state == "on" else 0.45
-            self._glow_frame.set_color(self._glow_rgb, self._glow_alpha)
             self._status_ring.set_pulse(0.7)
-        self._glow_frame.set_color(self._glow_rgb, self._glow_alpha)
+            self._glow_frame.set_color(self._glow_rgb, self._glow_alpha)
 
     def _pulse_step(self) -> None:
         self._pulse_phase = (self._pulse_phase + 0.07) % (2 * math.pi)
@@ -217,11 +218,11 @@ class MainWindow(QMainWindow):
         content.setSpacing(0)
 
         content.addWidget(self._build_header())
-        content.addSpacing(16)
+        content.addSpacing(18)
         content.addLayout(self._build_status_area())
-        content.addSpacing(14)
+        content.addSpacing(16)
         content.addLayout(self._build_cards())
-        content.addSpacing(12)
+        content.addSpacing(14)
         content.addWidget(self._build_connect_row())
         content.addSpacing(10)
         content.addWidget(self._build_log(), stretch=1)
@@ -265,7 +266,7 @@ class MainWindow(QMainWindow):
 
         ring_row = QHBoxLayout()
         ring_row.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._status_ring = StatusRing(100)
+        self._status_ring = StatusRing(120)
         self._status_ring.set_state("off")
         ring_row.addWidget(self._status_ring)
 
@@ -313,12 +314,19 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._spinner)
         return w
 
-    def _build_log(self) -> QTextEdit:
+    def _build_log(self) -> QWidget:
+        wrapper = QWidget()
+        lay = QVBoxLayout(wrapper)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(5)
+        lbl = QLabel("ACTIVITY LOG")
+        lbl.setObjectName("logLabel")
         self._log = QTextEdit()
         self._log.setObjectName("log")
         self._log.setReadOnly(True)
-        self._log.setMaximumHeight(108)
-        return self._log
+        lay.addWidget(lbl)
+        lay.addWidget(self._log)
+        return wrapper
 
     # ── settings ──────────────────────────────────────────────
 
@@ -394,6 +402,10 @@ class MainWindow(QMainWindow):
         self._spinner.stop()
         self._connect_btn.setEnabled(True)
         self._set_cards_enabled(True)
+
+        if self._quitting:
+            self._do_quit()
+            return
 
         if success and info == "connect":
             self._connected = True
@@ -550,13 +562,20 @@ class MainWindow(QMainWindow):
                         k = k.strip()
                         if k in ("DISPLAY", "WAYLAND_DISPLAY",
                                  "DBUS_SESSION_BUS_ADDRESS",
-                                 "XDG_SESSION_TYPE"):
+                                 "XDG_SESSION_TYPE",
+                                 "QT_QPA_PLATFORMTHEME",
+                                 "XDG_CURRENT_DESKTOP",
+                                 "KDE_FULL_SESSION"):
                             env[k] = v.strip()
             except Exception:
                 pass
 
         # ── 3. /proc taraması — root /proc okuyabiliyorsa ──────────
-        if "DISPLAY" not in env and "WAYLAND_DISPLAY" not in env:
+        # Display değişkenleri eksikse veya KDE değişkenleri henüz alınmadıysa tara.
+        _need_scan = (
+            "DISPLAY" not in env and "WAYLAND_DISPLAY" not in env
+        ) or "QT_QPA_PLATFORMTHEME" not in env
+        if _need_scan:
             try:
                 for pid_s in os.listdir("/proc"):
                     if not pid_s.isdigit():
@@ -575,9 +594,16 @@ class MainWindow(QMainWindow):
                             if key in ("DISPLAY", "WAYLAND_DISPLAY",
                                        "DBUS_SESSION_BUS_ADDRESS",
                                        "XDG_SESSION_TYPE",
-                                       "XDG_RUNTIME_DIR"):
+                                       "XDG_RUNTIME_DIR",
+                                       "QT_QPA_PLATFORMTHEME",
+                                       "XDG_CURRENT_DESKTOP",
+                                       "KDE_FULL_SESSION"):
                                 env.setdefault(key, v.decode(errors="replace"))
-                        if "DISPLAY" in env or "WAYLAND_DISPLAY" in env:
+                        _all_found = (
+                            ("DISPLAY" in env or "WAYLAND_DISPLAY" in env)
+                            and "QT_QPA_PLATFORMTHEME" in env
+                        )
+                        if _all_found:
                             break
                     except (PermissionError, FileNotFoundError, ProcessLookupError):
                         continue
@@ -650,19 +676,22 @@ class MainWindow(QMainWindow):
             self._append_log("[!] runuser/su bulunamadı — tray disabled.")
             return
 
-        # Helper'ın başlayıp başlamadığını 600 ms bekle
-        import time
-        time.sleep(0.6)
+        self._tray_username = username
+        self._tray_poll = QTimer(self)
+        self._tray_poll.timeout.connect(self._poll_tray)
+        self._tray_poll.start(100)
+        QTimer.singleShot(600, self._check_tray_startup)
+
+    def _check_tray_startup(self) -> None:
+        if not self._tray_proc:
+            return
         if self._tray_proc.poll() is not None:
             err = self._tray_proc.stderr.read().decode(errors="replace").strip()
             self._append_log(f"[!] Tray helper closed. Hata: {err or '(yok)'}")
             self._tray_proc = None
-            return
-
-        self._tray_poll = QTimer(self)
-        self._tray_poll.timeout.connect(self._poll_tray)
-        self._tray_poll.start(100)
-        self._append_log(f"[>] Tray helper started: ({username}).")
+            self._tray_poll.stop()
+        else:
+            self._append_log(f"[>] Tray helper started: ({self._tray_username}).")
 
     def _poll_tray(self) -> None:
         """Helper process'ten gelen show/quit mesajlarını oku."""
@@ -689,6 +718,8 @@ class MainWindow(QMainWindow):
 
         if line == "show":
             self._tray_show()
+        elif line == "disconnect":
+            self._tray_disconnect()
         elif line == "quit":
             self._tray_quit()
 
@@ -700,25 +731,35 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _do_quit(self) -> None:
+        self._tray_send("ack_quit")
+        if self._tray_proc:
+            try:
+                self._tray_proc.wait(timeout=3)
+            except Exception:
+                self._tray_proc.kill()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.quit()
+
     def _tray_show(self) -> None:
         self.showNormal()
         self.raise_()
         self.activateWindow()
 
+    def _tray_disconnect(self) -> None:
+        if self._connected and self._worker is None:
+            self._start_worker("disconnect", {})
+
     def _tray_quit(self) -> None:
-        if self._connected:
-            try:
-                self._mgr.disconnect()
-            except Exception:
-                pass
-        self._tray_send("quit")
-        if self._tray_proc:
-            try:
-                self._tray_proc.wait(timeout=2)
-            except Exception:
-                self._tray_proc.kill()
-        from PyQt6.QtWidgets import QApplication
-        QApplication.quit()
+        self._quitting = True
+        if self._connected and self._worker is None:
+            # Disconnect worker biter biter _on_worker_done içinde quit yapılır
+            self._start_worker("disconnect", {})
+        elif self._worker is not None:
+            # Zaten çalışan worker var; bitince _on_worker_done quit yapar
+            pass
+        else:
+            self._do_quit()
 
     # ── close event ───────────────────────────────────────────
 

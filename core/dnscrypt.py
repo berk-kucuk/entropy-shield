@@ -12,8 +12,11 @@ _CONFIG_PATHS = [
     "/etc/dnscrypt-proxy/dnscrypt-proxy.toml",
     "/etc/dnscrypt-proxy.toml",
 ]
-_BAK_SUFFIX = ".entropy-shield.bak"
-_LISTEN_RE  = re.compile(r"^listen_addresses\s*=.*$", re.MULTILINE)
+_BAK_SUFFIX   = ".entropy-shield.bak"
+_LISTEN_RE    = re.compile(r"^listen_addresses\s*=.*$", re.MULTILINE)
+_DNSSEC_RE    = re.compile(r"^require_dnssec\s*=.*$", re.MULTILINE)
+_NOLOG_RE     = re.compile(r"^require_nolog\s*=.*$", re.MULTILINE)
+_NOFILTER_RE  = re.compile(r"^require_nofilter\s*=.*$", re.MULTILINE)
 
 
 class DNSCryptManager:
@@ -39,6 +42,10 @@ class DNSCryptManager:
         port        = cfg().get("dnscrypt", "port")
         listen_line = f"listen_addresses = ['127.0.0.1:{port}']"
 
+        dnssec   = "true" if cfg().get("dnscrypt", "require_dnssec")   else "false"
+        nolog    = "true" if cfg().get("dnscrypt", "require_nolog")     else "false"
+        nofilter = "true" if cfg().get("dnscrypt", "require_nofilter")  else "false"
+
         bak = self._config + _BAK_SUFFIX
         if not os.path.exists(bak):
             shutil.copy2(self._config, bak)
@@ -46,10 +53,20 @@ class DNSCryptManager:
         with open(self._config, "r") as f:
             content = f.read()
 
+        def _replace_or_append(text: str, pattern: re.Pattern, key: str, val: str) -> str:
+            line = f"{key} = {val}"
+            if pattern.search(text):
+                return pattern.sub(line, text)
+            return text + f"\n{line}\n"
+
         if _LISTEN_RE.search(content):
             content = _LISTEN_RE.sub(listen_line, content)
         else:
             content += f"\n{listen_line}\n"
+
+        content = _replace_or_append(content, _DNSSEC_RE,   "require_dnssec",   dnssec)
+        content = _replace_or_append(content, _NOLOG_RE,    "require_nolog",    nolog)
+        content = _replace_or_append(content, _NOFILTER_RE, "require_nofilter", nofilter)
 
         with open(self._config, "w") as f:
             f.write(content)

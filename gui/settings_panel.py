@@ -7,31 +7,15 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QRect, QPropertyAnimation, QEasingCurve, pyqtSignal,
-    pyqtProperty, QRectF,
+    pyqtProperty,
 )
-from PyQt6.QtGui import QPainter, QColor, QPixmap
-from PyQt6.QtWidgets import QGraphicsBlurEffect, QGraphicsScene
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient
 
 from gui.themes import current as theme
 from gui.widgets import ToggleSwitch
 from core.config import cfg
 
 _PANEL_W = 430
-
-
-def _blurred(pixmap: QPixmap, radius: float = 24.0) -> QPixmap:
-    scene = QGraphicsScene()
-    item  = scene.addPixmap(pixmap)
-    effect = QGraphicsBlurEffect()
-    effect.setBlurRadius(radius)
-    item.setGraphicsEffect(effect)
-
-    out = QPixmap(pixmap.size())
-    out.fill(Qt.GlobalColor.transparent)
-    p = QPainter(out)
-    scene.render(p, QRectF(out.rect()), QRectF(pixmap.rect()))
-    p.end()
-    return out
 
 
 # ──────────────────────────────────────────────────────────────
@@ -46,7 +30,6 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setGeometry(parent.rect())
-        self._bg: QPixmap | None = None
 
         self._card = QFrame(self)
         self._card.setObjectName("settingsCard")
@@ -71,7 +54,6 @@ class SettingsPanel(QWidget):
     def open(self) -> None:
         self.setGeometry(self.parent().rect())
         self._card.setGeometry(self.width(), 14, _PANEL_W, self.height() - 28)
-        self._bg = _blurred(self.parent().grab())
         self._populate()
         self.show()
         self.raise_()
@@ -87,6 +69,10 @@ class SettingsPanel(QWidget):
         self._anim.stop()
         self._anim.setStartValue(start)
         self._anim.setEndValue(end)
+        try:
+            self._anim.finished.disconnect(self._on_close_done)
+        except (TypeError, RuntimeError):
+            pass
         self._anim.finished.connect(self._on_close_done)
         self._anim.start()
 
@@ -241,7 +227,7 @@ class SettingsPanel(QWidget):
 
         self._loki_socks   = self._spinbox(1024, 65535)
         self._loki_exit    = QLineEdit()
-        self._loki_exit.setPlaceholderText("exit.loki  (boş = relay modu)")
+        self._loki_exit.setPlaceholderText("exit.loki  (empty = relay mode)")
         self._loki_use_exit = ToggleSwitch(checked=False)
 
         lay.addWidget(self._section("LOKINET"))
@@ -252,9 +238,9 @@ class SettingsPanel(QWidget):
         lay.addLayout(self._row("Use Exit Node", self._loki_use_exit))
 
         note = QLabel(
-            "Exit node etkinleştirilirse tüm trafik Lokinet\n"
-            "üzerinden yönlendirilir. Boş bırakılırsa relay\n"
-            "modunda çalışır (.loki domainlere erişim sağlar)."
+            "When an exit node is set, all traffic is routed through\n"
+            "Lokinet. If left empty, runs in relay mode and provides\n"
+            "access to .loki domains only."
         )
         note.setObjectName("settingLabel")
         note.setWordWrap(True)
@@ -273,13 +259,11 @@ class SettingsPanel(QWidget):
         self._theme_toggle = ToggleSwitch(checked=(cfg().get("theme") == "dark"))
 
         theme_row = QHBoxLayout()
-        dark_lbl  = QLabel("DARK")
+        dark_lbl  = QLabel("Dark Mode")
         dark_lbl.setObjectName("settingLabel")
-        light_lbl = QLabel("LIGHT")
-        light_lbl.setObjectName("settingLabel")
-        theme_row.addWidget(dark_lbl)
         theme_row.addWidget(self._theme_toggle)
-        theme_row.addWidget(light_lbl)
+        theme_row.addSpacing(10)
+        theme_row.addWidget(dark_lbl)
         theme_row.addStretch()
 
         lay.addWidget(self._section("APPEARANCE"))
@@ -342,10 +326,12 @@ class SettingsPanel(QWidget):
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
-        if self._bg:
-            p.drawPixmap(0, 0, self._bg)
-        overlay = QColor(0, 0, 0, 155 if theme()["name"] == "dark" else 90)
-        p.fillRect(self.rect(), overlay)
+        is_dark = theme()["name"] == "dark"
+        if is_dark:
+            base = QColor(4, 7, 12, 210)
+        else:
+            base = QColor(16, 24, 40, 140)
+        p.fillRect(self.rect(), base)
 
     def mousePressEvent(self, e) -> None:
         if not self._card.geometry().contains(e.pos()):

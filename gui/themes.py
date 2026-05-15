@@ -1,63 +1,63 @@
 from __future__ import annotations
 
 DARK: dict[str, str] = {
-    "name":         "dark",
-    "bg":           "#0d0f11",
-    "frame_bg":     "rgba(16, 19, 23, 0.97)",
-    "card_bg":      "rgba(24, 28, 34, 0.90)",
-    "card_bg_h":    "rgba(30, 35, 42, 0.96)",
-    "border":       "rgba(255, 255, 255, 0.07)",
-    "border_soft":  "rgba(255, 255, 255, 0.04)",
-    "border_hover": "rgba(126, 182, 255, 0.55)",
-    "border_active":"rgba(74, 210, 116, 0.70)",
-    "border_error": "rgba(239, 103, 103, 0.70)",
-    "text":         "#edf0f4",
-    "text_muted":   "#8a94a2",
-    "text_dim":     "#505a66",
-    "green":        "#4ad274",
-    "blue":         "#7eb6ff",
-    "yellow":       "#e2b15e",
-    "red":          "#ef6767",
-    "log_fg":       "#c8d0da",
-    "log_bg":       "rgba(10, 12, 15, 0.80)",
-    "scrollbar":    "rgba(255, 255, 255, 0.10)",
-    "input_bg":     "rgba(255, 255, 255, 0.04)",
-    "input_border": "rgba(255, 255, 255, 0.08)",
-    "tab_active":   "#7eb6ff",
-    "title_btn":    "rgba(255, 255, 255, 0.04)",
-    "close_hover":  "#ef6767",
-    "min_hover":    "#e2b15e",
-    "section_bg":   "rgba(255, 255, 255, 0.03)",
+    "name":          "dark",
+    "bg":            "#080b10",
+    "frame_bg":      "rgba(11,15,22,0.98)",
+    "card_bg":       "rgba(14,19,28,0.93)",
+    "card_bg_h":     "rgba(20,26,38,0.97)",
+    "border":        "rgba(255,255,255,0.055)",
+    "border_soft":   "rgba(255,255,255,0.028)",
+    "border_hover":  "rgba(98,168,255,0.52)",
+    "border_active": "rgba(58,204,114,0.62)",
+    "border_error":  "rgba(240,80,80,0.62)",
+    "text":          "#e6eaf2",
+    "text_muted":    "#6e7e92",
+    "text_dim":      "#38475a",
+    "green":         "#3acc72",
+    "blue":          "#62a8ff",
+    "yellow":        "#dda04a",
+    "red":           "#ef5050",
+    "log_fg":        "#a8b8c8",
+    "log_bg":        "rgba(6,9,14,0.92)",
+    "scrollbar":     "rgba(255,255,255,0.07)",
+    "input_bg":      "rgba(255,255,255,0.033)",
+    "input_border":  "rgba(255,255,255,0.07)",
+    "tab_active":    "#62a8ff",
+    "title_btn":     "rgba(255,255,255,0.035)",
+    "close_hover":   "#ef5050",
+    "min_hover":     "#dda04a",
+    "section_bg":    "rgba(255,255,255,0.018)",
 }
 
 LIGHT: dict[str, str] = {
-    "name":         "light",
-    "bg":           "#f0f4f9",
-    "frame_bg":     "rgba(246, 249, 255, 0.97)",
-    "card_bg":      "rgba(255, 255, 255, 0.88)",
-    "card_bg_h":    "rgba(255, 255, 255, 0.99)",
-    "border":       "rgba(24, 36, 58, 0.10)",
-    "border_soft":  "rgba(24, 36, 58, 0.05)",
-    "border_hover": "rgba(0, 85, 238, 0.45)",
-    "border_active":"rgba(26, 127, 55, 0.55)",
-    "border_error": "rgba(204, 34, 34, 0.55)",
-    "text":         "#18243a",
-    "text_muted":   "#4c6077",
-    "text_dim":     "#8b99aa",
-    "green":        "#1a7f37",
-    "blue":         "#0055ee",
-    "yellow":       "#a05a00",
-    "red":          "#cc2222",
-    "log_fg":       "#213246",
-    "log_bg":       "rgba(255, 255, 255, 0.75)",
-    "scrollbar":    "rgba(24, 36, 58, 0.14)",
-    "input_bg":     "rgba(255, 255, 255, 0.85)",
-    "input_border": "rgba(24, 36, 58, 0.12)",
-    "tab_active":   "#0055ee",
-    "title_btn":    "rgba(24, 36, 58, 0.04)",
-    "close_hover":  "#cc2222",
-    "min_hover":    "#a05a00",
-    "section_bg":   "rgba(0, 0, 0, 0.02)",
+    "name":          "light",
+    "bg":            "#edf1f7",
+    "frame_bg":      "rgba(244,248,255,0.98)",
+    "card_bg":       "rgba(255,255,255,0.90)",
+    "card_bg_h":     "rgba(255,255,255,0.99)",
+    "border":        "rgba(20,36,60,0.09)",
+    "border_soft":   "rgba(20,36,60,0.045)",
+    "border_hover":  "rgba(0,85,238,0.45)",
+    "border_active": "rgba(26,127,55,0.55)",
+    "border_error":  "rgba(204,34,34,0.55)",
+    "text":          "#16223a",
+    "text_muted":    "#4a5f7a",
+    "text_dim":      "#8896aa",
+    "green":         "#1a7f37",
+    "blue":          "#0055ee",
+    "yellow":        "#a05a00",
+    "red":           "#cc2222",
+    "log_fg":        "#1e3450",
+    "log_bg":        "rgba(255,255,255,0.78)",
+    "scrollbar":     "rgba(20,36,60,0.12)",
+    "input_bg":      "rgba(255,255,255,0.88)",
+    "input_border":  "rgba(20,36,60,0.10)",
+    "tab_active":    "#0055ee",
+    "title_btn":     "rgba(20,36,60,0.04)",
+    "close_hover":   "#cc2222",
+    "min_hover":     "#a05a00",
+    "section_bg":    "rgba(0,0,0,0.018)",
 }
 
 _current: dict[str, str] = DARK
@@ -73,6 +73,39 @@ def set_theme(name: str) -> None:
 
 
 def build_qss(c: dict[str, str]) -> str:
+    is_dark = c["name"] == "dark"
+
+    if is_dark:
+        card_grad_stop0 = "rgba(22,28,42,0.96)"
+        card_grad_hover_stop0 = "rgba(28,36,54,0.98)"
+        connect_normal_grad = (
+            "qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(22,28,42,0.97),stop:1 rgba(12,16,24,0.93))"
+        )
+        connect_hover_grad = (
+            "qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(65,125,255,0.20),stop:1 rgba(35,75,200,0.08))"
+        )
+        connect_checked_grad = (
+            "qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(42,185,95,0.25),stop:1 rgba(22,125,60,0.12))"
+        )
+    else:
+        card_grad_stop0 = "rgba(255,255,255,0.95)"
+        card_grad_hover_stop0 = "rgba(255,255,255,0.99)"
+        connect_normal_grad = (
+            "qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(240,245,255,0.95),stop:1 rgba(228,238,252,0.88))"
+        )
+        connect_hover_grad = (
+            "qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(0,85,238,0.15),stop:1 rgba(0,55,180,0.06))"
+        )
+        connect_checked_grad = (
+            "qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(26,127,55,0.20),stop:1 rgba(10,90,40,0.08))"
+        )
+
     return f"""
 * {{
     font-family: 'Inter', 'SF Pro Display', 'Segoe UI', sans-serif;
@@ -98,10 +131,10 @@ QWidget#appHeader {{
     border-bottom: 1px solid {c['border_soft']};
 }}
 QLabel#appTitle {{
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 700;
     color: {c['text']};
-    letter-spacing: 4px;
+    letter-spacing: 5px;
     background: transparent;
 }}
 QLabel#logoLbl {{
@@ -111,23 +144,24 @@ QLabel#logoLbl {{
 QPushButton#settingsBtn {{
     background: {c['title_btn']};
     border: 1px solid {c['border']};
-    border-radius: 13px;
-    min-width: 26px; max-width: 26px;
-    min-height: 26px; max-height: 26px;
+    border-radius: 14px;
+    min-width: 28px; max-width: 28px;
+    min-height: 28px; max-height: 28px;
     color: {c['text_dim']};
-    font-size: 12px;
+    font-size: 13px;
     padding: 0;
 }}
 QPushButton#settingsBtn:hover {{
+    background: rgba(98,168,255,0.10);
     border-color: {c['blue']};
     color: {c['blue']};
 }}
 
 /* ── status labels ── */
 QLabel#statusTitle {{
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 700;
-    letter-spacing: 4px;
+    letter-spacing: 5px;
     background: transparent;
     color: {c['text_muted']};
 }}
@@ -135,28 +169,37 @@ QLabel#statusSub {{
     font-size: 10px;
     color: {c['text_dim']};
     background: transparent;
-    letter-spacing: 1px;
+    letter-spacing: 2px;
 }}
 
 /* ── service cards ── */
 QFrame#serviceCard {{
-    background-color: {c['card_bg']};
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {card_grad_stop0},stop:1 {c['card_bg']});
     border: 1px solid {c['border']};
     border-radius: 16px;
 }}
 QFrame#serviceCard:hover {{
-    background-color: {c['card_bg_h']};
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {card_grad_hover_stop0},stop:1 {c['card_bg_h']});
     border-color: {c['border_hover']};
 }}
 QFrame#serviceCard[status="active"] {{
     border-color: {c['border_active']};
-    background-color: {c['card_bg_h']};
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {card_grad_hover_stop0},stop:1 {c['card_bg_h']});
 }}
 QFrame#serviceCard[status="connecting"] {{
     border-color: {c['yellow']};
 }}
 QFrame#serviceCard[status="error"] {{
     border-color: {c['border_error']};
+}}
+QLabel#cardTitle {{
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    background: transparent;
 }}
 QLabel#cardDesc {{
     font-size: 10px;
@@ -181,7 +224,7 @@ QLabel#cardStatus[state="active"]     {{ color: {c['green']};  }}
 QLabel#cardStatus[state="connecting"] {{ color: {c['yellow']}; }}
 QLabel#cardStatus[state="error"]      {{ color: {c['red']};    }}
 QPushButton#gearBtn {{
-    background: {c['section_bg']};
+    background: transparent;
     border: 1px solid {c['border_soft']};
     border-radius: 10px;
     color: {c['text_dim']};
@@ -189,34 +232,44 @@ QPushButton#gearBtn {{
     padding: 0;
 }}
 QPushButton#gearBtn:hover {{
+    background: rgba(98,168,255,0.06);
     color: {c['text_muted']};
     border-color: {c['border_hover']};
 }}
 
+/* ── log label ── */
+QLabel#logLabel {{
+    font-size: 8px;
+    font-weight: 700;
+    color: {c['text_dim']};
+    letter-spacing: 3px;
+    background: transparent;
+}}
+
 /* ── connect button ── */
 QPushButton#connectBtn {{
-    background-color: {c['card_bg']};
+    background: {connect_normal_grad};
     border: 1.5px solid {c['border']};
     border-radius: 14px;
     font-size: 11px;
     font-weight: 700;
     color: {c['text_muted']};
     letter-spacing: 7px;
-    min-height: 50px;
+    min-height: 54px;
 }}
 QPushButton#connectBtn:hover:!checked {{
+    background: {connect_hover_grad};
     border-color: {c['blue']};
     color: {c['blue']};
-    background-color: {c['card_bg_h']};
 }}
 QPushButton#connectBtn:checked {{
-    border: 1.5px solid {c['green']};
+    background: {connect_checked_grad};
+    border: 1.5px solid {c['border_active']};
     color: {c['green']};
-    background-color: {c['card_bg']};
 }}
 QPushButton#connectBtn:disabled {{
-    background-color: {c['frame_bg']};
-    border-color: {c['border']};
+    background: {c['card_bg']};
+    border-color: {c['border_soft']};
     color: {c['text_dim']};
 }}
 
@@ -265,7 +318,9 @@ QPushButton#saveBtn {{
     min-height: 36px;
     padding: 0 20px;
 }}
-QPushButton#saveBtn:hover {{ opacity: 0.85; }}
+QPushButton#saveBtn:hover {{
+    border: 1px solid {c['green']};
+}}
 QPushButton#closeBtn {{
     background: transparent;
     border: 1px solid {c['border']};
@@ -282,7 +337,7 @@ QPushButton#closeBtn:hover {{
 
 /* ── inputs ── */
 QSpinBox, QLineEdit {{
-    background-color: {c['input_bg']};
+    background: {c['input_bg']};
     border: 1px solid {c['input_border']};
     border-radius: 9px;
     color: {c['text']};

@@ -15,7 +15,7 @@ _DEFAULTS: dict = {
         "strict_nodes": False,
     },
     "dnscrypt": {
-        "port":              5353,
+        "port":              5300,
         "require_dnssec":    False,
         "require_nolog":     True,
         "require_nofilter":  True,

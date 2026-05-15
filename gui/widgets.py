@@ -6,9 +6,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve,
-    pyqtProperty, pyqtSignal,
+    pyqtProperty, pyqtSignal, QRectF, QPointF,
 )
-from PyQt6.QtGui import QPainter, QColor, QPen
+from PyQt6.QtGui import QPainter, QColor, QPen, QLinearGradient, QPainterPath
 
 from gui.themes import current as theme
 
@@ -118,7 +118,7 @@ class Spinner(QWidget):
 
 
 # ──────────────────────────────────────────────────────────────
-#  StatusRing  — central animated ring (replaces old StatusBanner)
+#  StatusRing  — central animated ring
 # ──────────────────────────────────────────────────────────────
 
 _RING_COLORS = {
@@ -149,11 +149,10 @@ class StatusRing(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         r, g, b = _RING_COLORS.get(self._state, _RING_COLORS["off"])
-        intensity = (0.5 + 0.5 * self._pulse) if self._state == "connecting" else 0.85
+        intensity = (0.5 + 0.5 * self._pulse) if self._state == "connecting" else 0.90
         cx, cy = self.width() / 2, self.height() / 2
         outer = self.width() / 2 - 4
 
-        # Outer glow rings
         for i in range(12, 0, -1):
             a = int(intensity * 90 * ((12 - i) / 12) ** 1.6)
             p.setPen(QPen(QColor(r, g, b, a), 1))
@@ -163,7 +162,6 @@ class StatusRing(QWidget):
                 int((outer + i) * 2), int((outer + i) * 2),
             )
 
-        # Main ring
         ring_pen = QPen(QColor(r, g, b, int(200 * intensity)), 2.5)
         ring_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(ring_pen)
@@ -173,10 +171,8 @@ class StatusRing(QWidget):
             int(outer * 2), int(outer * 2),
         )
 
-        # Center symbol
         sym_r = outer * 0.36
         if self._state == "on":
-            # Checkmark
             pen2 = QPen(QColor(r, g, b, int(230 * intensity)), 2.5,
                         Qt.PenStyle.SolidLine,
                         Qt.PenCapStyle.RoundCap,
@@ -188,7 +184,6 @@ class StatusRing(QWidget):
                        int(cx + sym_r * 0.8), int(cy - sym_r * 0.65))
 
         elif self._state == "connecting":
-            # Pulsing dot
             a = int(120 + 135 * self._pulse)
             p.setBrush(QColor(r, g, b, a))
             p.setPen(Qt.PenStyle.NoPen)
@@ -196,17 +191,110 @@ class StatusRing(QWidget):
             p.drawEllipse(int(cx - dot), int(cy - dot), dot * 2, dot * 2)
 
         else:
-            # Lock shape (disconnected/error)
             p.setPen(QPen(QColor(r, g, b, int(160 * intensity)), 1.8,
                           Qt.PenStyle.SolidLine,
                           Qt.PenCapStyle.RoundCap))
             bw, bh = int(sym_r * 0.85), int(sym_r * 0.7)
             by = int(cy - sym_r * 0.1)
             p.drawRoundedRect(int(cx - bw // 2), by, bw, bh, 3, 3)
-            # Shackle arc
             p.setBrush(Qt.BrushStyle.NoBrush)
             ar = int(bw * 0.38)
             p.drawArc(int(cx - ar), int(by - ar * 2 + 2), ar * 2, ar * 2, 0, 180 * 16)
+
+
+# ──────────────────────────────────────────────────────────────
+#  _ServiceIcon  — QPainter vector icon for each service
+# ──────────────────────────────────────────────────────────────
+
+class _ServiceIcon(QWidget):
+    def __init__(self, tag: str, r: int, g: int, b: int, parent=None):
+        super().__init__(parent)
+        self._tag = tag
+        self._r, self._g, self._b = r, g, b
+        self.setFixedSize(18, 18)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r, g, b = self._r, self._g, self._b
+        s = float(self.width())
+        cx, cy = s / 2, s / 2
+
+        def _pen(alpha: int = 230, width: float = 1.4) -> QPen:
+            return QPen(QColor(r, g, b, alpha), width,
+                        Qt.PenStyle.SolidLine,
+                        Qt.PenCapStyle.RoundCap,
+                        Qt.PenJoinStyle.RoundJoin)
+
+        if self._tag == "tor":
+            # Onion: three concentric rings, fading outward
+            for rad, alpha in [(2.2, 240), (4.6, 165), (7.2, 85)]:
+                p.setPen(_pen(alpha, 1.3))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QRectF(cx - rad, cy - rad, rad * 2, rad * 2))
+
+        elif self._tag == "dnscrypt":
+            # Shield with a lock inside
+            w, h = s * 0.62, s * 0.78
+            lx, rx = cx - w / 2, cx + w / 2
+            ty, by = cy - h / 2, cy + h / 2
+            mid = ty + h * 0.40
+            path = QPainterPath()
+            path.moveTo(cx, ty)
+            path.lineTo(rx, mid)
+            path.quadTo(rx, by - h * 0.04, cx, by)
+            path.quadTo(lx, by - h * 0.04, lx, mid)
+            path.lineTo(cx, ty)
+            p.setPen(_pen())
+            p.setBrush(QColor(r, g, b, 30))
+            p.drawPath(path)
+            # Lock body
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(r, g, b, 210))
+            kr = s * 0.10
+            p.drawEllipse(QRectF(cx - kr, cy - kr * 0.2, kr * 2, kr * 2))
+            # Lock shackle
+            p.setPen(_pen(200, 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            sr = s * 0.085
+            p.drawArc(QRectF(cx - sr, cy - sr * 2.4, sr * 2, sr * 2), 0, 180 * 16)
+
+        elif self._tag == "i2p":
+            # Triangle of three interconnected nodes
+            nodes = [
+                QPointF(cx + 6.5 * math.cos(math.radians(-90 + i * 120)),
+                        cy + 6.5 * math.sin(math.radians(-90 + i * 120)))
+                for i in range(3)
+            ]
+            p.setPen(_pen(170, 1.3))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for i in range(3):
+                p.drawLine(nodes[i], nodes[(i + 1) % 3])
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(r, g, b, 235))
+            for n in nodes:
+                p.drawEllipse(QRectF(n.x() - 2.1, n.y() - 2.1, 4.2, 4.2))
+
+        elif self._tag == "lokinet":
+            # Hexagon outline with a center node
+            hr = s * 0.41
+            path = QPainterPath()
+            for i in range(6):
+                a = math.radians(30 + i * 60)
+                px, py = cx + hr * math.cos(a), cy + hr * math.sin(a)
+                if i == 0:
+                    path.moveTo(px, py)
+                else:
+                    path.lineTo(px, py)
+            path.closeSubpath()
+            p.setPen(_pen())
+            p.setBrush(QColor(r, g, b, 22))
+            p.drawPath(path)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(r, g, b, 230))
+            nr = s * 0.13
+            p.drawEllipse(QRectF(cx - nr, cy - nr, nr * 2, nr * 2))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -220,12 +308,11 @@ _CARD_META: dict[str, tuple[str, str]] = {
     "lokinet":  ("LOKINET",  "LLARP network"),
 }
 
-# Service-specific accent colors (r, g, b)
 _CARD_COLORS: dict[str, tuple[int, int, int]] = {
-    "tor":      (138, 110, 210),   # purple
-    "dnscrypt": ( 78, 182, 255),   # blue
-    "i2p":      ( 78, 210, 160),   # teal
-    "lokinet":  (255, 160,  60),   # orange
+    "tor":      (138, 110, 210),
+    "dnscrypt": ( 78, 182, 255),
+    "i2p":      ( 78, 210, 160),
+    "lokinet":  (255, 160,  60),
 }
 
 
@@ -238,36 +325,31 @@ class ServiceCard(QFrame):
         self._tag = tag
         title, desc = _CARD_META[tag]
         ar, ag, ab  = _CARD_COLORS[tag]
+        self._accent = (ar, ag, ab)
 
         self.setObjectName("serviceCard")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(132)
+        self.setFixedHeight(140)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 14, 12)
+        root.setContentsMargins(16, 16, 14, 14)
         root.setSpacing(0)
 
-        # ── icon circle ────────────────────────────────────
+        # ── icon circle (32×32) ────────────────────────────────
         icon_frame = QWidget()
-        icon_frame.setFixedSize(38, 38)
+        icon_frame.setFixedSize(32, 32)
         icon_frame.setObjectName("cardIconFrame")
         icon_frame.setStyleSheet(
             f"background: rgba({ar},{ag},{ab},0.13);"
             f"border: 1px solid rgba({ar},{ag},{ab},0.30);"
-            f"border-radius: 19px;"
+            f"border-radius: 16px;"
         )
         icon_inner = QVBoxLayout(icon_frame)
         icon_inner.setContentsMargins(0, 0, 0, 0)
         icon_inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon_lbl = QLabel(_SERVICE_ICON[tag])
-        self._icon_lbl.setStyleSheet(
-            f"color: rgba({ar},{ag},{ab},0.92); font-size:14px;"
-            f"background:transparent; border:none;"
-        )
-        self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_inner.addWidget(self._icon_lbl)
+        icon_inner.addWidget(_ServiceIcon(tag, ar, ag, ab))
 
-        # ── toggle ─────────────────────────────────────────
+        # ── toggle ─────────────────────────────────────────────
         self._toggle = ToggleSwitch(checked=True)
         self._toggle.toggled.connect(lambda v: self.toggled.emit(self._tag, v))
 
@@ -276,18 +358,19 @@ class ServiceCard(QFrame):
         top.setSpacing(0)
         top.addWidget(icon_frame)
         top.addStretch()
+        top.addSpacing(8)       # guaranteed minimum gap before toggle
         top.addWidget(self._toggle)
 
-        # ── title ──────────────────────────────────────────
+        # ── title ──────────────────────────────────────────────
         title_lbl = QLabel(title)
         title_lbl.setObjectName("cardTitle")
         title_lbl.setStyleSheet(
             f"color: rgba({ar},{ag},{ab},0.95);"
-            f"font-size:12px; font-weight:700; letter-spacing:2px;"
+            f"font-size:11px; font-weight:700; letter-spacing:2px;"
             f"background:transparent;"
         )
 
-        # ── desc + status row ──────────────────────────────
+        # ── desc + status row ──────────────────────────────────
         bot = QHBoxLayout()
         bot.setContentsMargins(0, 0, 0, 0)
         bot.setSpacing(6)
@@ -318,6 +401,20 @@ class ServiceCard(QFrame):
         root.addStretch()
         root.addLayout(bot)
 
+    def paintEvent(self, e) -> None:
+        super().paintEvent(e)
+        ar, ag, ab = self._accent
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(self.rect()), 16, 16)
+        p.setClipPath(clip)
+        g = QLinearGradient(0, 0, self.width(), 0)
+        g.setColorAt(0.0, QColor(ar, ag, ab, 210))
+        g.setColorAt(0.55, QColor(ar, ag, ab, 70))
+        g.setColorAt(1.0, QColor(ar, ag, ab, 0))
+        p.fillRect(0, 0, self.width(), 3, g)
+
     @property
     def is_checked(self) -> bool:
         return self._toggle.isChecked()
@@ -340,11 +437,3 @@ class ServiceCard(QFrame):
 
     def set_enabled_ui(self, enabled: bool) -> None:
         self._toggle.setEnabled(enabled)
-
-
-_SERVICE_ICON: dict[str, str] = {
-    "tor":      "⬡",
-    "dnscrypt": "⊕",
-    "i2p":      "◈",
-    "lokinet":  "⬢",
-}
