@@ -36,6 +36,17 @@ dnf install -y -q \
     iproute \
     polkit
 
+if ! command -v redsocks &>/dev/null; then
+    dnf install -y -q redsocks 2>/dev/null || {
+        echo "[!] redsocks not in main repo, trying COPR..."
+        dnf copr enable -y zawertun/redsocks 2>/dev/null || true
+        dnf install -y -q redsocks 2>/dev/null || \
+            echo "[!] redsocks not installed. Transparent I2P routing unavailable."
+    }
+else
+    echo "[>] redsocks already installed, skipping."
+fi
+
 # dnscrypt-proxy: try official repo then Copr
 dnf install -y -q dnscrypt-proxy 2>/dev/null || {
     echo "[!] dnscrypt-proxy not in main repo, trying copr:cromerc/dnscrypt-proxy..."

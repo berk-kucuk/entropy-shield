@@ -28,7 +28,7 @@ fi
 
 # ── packages ──────────────────────────────────────────────────
 echo "[*] Installing dependencies..."
-pacman -Sy --needed \
+pacman -Sy --needed --noconfirm \
     python python-pip \
     python-pyqt6 \
     tor \
@@ -38,6 +38,22 @@ pacman -Sy --needed \
     iptables-nft \
     iproute2 \
     polkit
+
+# redsocks — AUR package, needed for transparent I2P routing
+if command -v redsocks &>/dev/null; then
+    echo "[>] redsocks already installed, skipping."
+elif command -v paru &>/dev/null; then
+    echo "[*] Installing redsocks from AUR via paru..."
+    sudo -u "${SUDO_USER:-$USER}" paru -S --noconfirm redsocks 2>/dev/null || \
+        echo "[!] redsocks AUR install failed. Run: paru -S redsocks"
+elif command -v yay &>/dev/null; then
+    echo "[*] Installing redsocks from AUR via yay..."
+    sudo -u "${SUDO_USER:-$USER}" yay -S --noconfirm redsocks 2>/dev/null || \
+        echo "[!] redsocks AUR install failed. Run: yay -S redsocks"
+else
+    echo "[!] No AUR helper found. Install redsocks manually for transparent I2P routing:"
+    echo "    paru -S redsocks   OR   yay -S redsocks"
+fi
 
 # ── install application ───────────────────────────────────────
 echo "[*] Installing application to $DEST..."

@@ -40,7 +40,7 @@ class DNSCryptManager:
 
         self._config = self._find_config()
         port        = cfg().get("dnscrypt", "port")
-        listen_line = f"listen_addresses = ['127.0.0.1:{port}']"
+        listen_line = f"listen_addresses = ['127.0.0.1:{port}', '[::1]:{port}']"
 
         dnssec   = "true" if cfg().get("dnscrypt", "require_dnssec")   else "false"
         nolog    = "true" if cfg().get("dnscrypt", "require_nolog")     else "false"

@@ -23,6 +23,7 @@ from gui.widgets import ServiceCard, Spinner, StatusRing
 from gui.settings_panel import SettingsPanel
 from core.connection import ConnectionManager
 from core.config import cfg
+import core.browser as browser
 
 # Logo path — relative to this file (gui/) → parent → logos/
 _LOGO_PATH = os.path.join(
@@ -58,11 +59,11 @@ class _Worker(QThread):
     def run(self) -> None:
         emit = self.log.emit
         self._mgr._log      = emit
-        self._mgr._tor._log = emit
-        self._mgr._dns._log = emit
-        self._mgr._i2p._log = emit
-        self._mgr._loki._log = emit
-        self._mgr._fw._log  = emit
+        self._mgr._tor._log   = emit
+        self._mgr._dns._log   = emit
+        self._mgr._i2p._log   = emit
+        self._mgr._onion._log = emit
+        self._mgr._fw._log    = emit
         try:
             if self._action == "connect":
                 self._mgr.connect(**self._layers)
@@ -224,7 +225,9 @@ class MainWindow(QMainWindow):
         content.addLayout(self._build_cards())
         content.addSpacing(14)
         content.addWidget(self._build_connect_row())
-        content.addSpacing(10)
+        content.addSpacing(6)
+        content.addWidget(self._build_browser_row())
+        content.addSpacing(8)
         content.addWidget(self._build_log(), stretch=1)
 
     def _build_header(self) -> QWidget:
@@ -258,6 +261,13 @@ class MainWindow(QMainWindow):
         btn_settings.clicked.connect(self._open_settings)
         lay.addWidget(btn_settings)
 
+        btn_quit = QPushButton("✕")
+        btn_quit.setObjectName("quitBtn")
+        btn_quit.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_quit.setToolTip("Quit")
+        btn_quit.clicked.connect(self._tray_quit)
+        lay.addWidget(btn_quit)
+
         return bar
 
     def _build_status_area(self) -> QVBoxLayout:
@@ -289,10 +299,13 @@ class MainWindow(QMainWindow):
         self._card_tor   = ServiceCard("tor")
         self._card_dns   = ServiceCard("dnscrypt")
         self._card_i2p   = ServiceCard("i2p")
-        self._card_loki  = ServiceCard("lokinet")
-        for card in (self._card_tor, self._card_dns, self._card_i2p, self._card_loki):
+        self._card_onion = ServiceCard("onion_server")
+        for card in (self._card_tor, self._card_dns, self._card_i2p, self._card_onion):
             card.settings_clicked.connect(self._open_settings_tab)
             row.addWidget(card)
+        # Tor ↔ Onion Server dependency
+        self._card_tor.toggled.connect(self._on_tor_toggled)
+        self._card_onion.toggled.connect(self._on_onion_toggled)
         return row
 
     def _build_connect_row(self) -> QWidget:
@@ -312,6 +325,36 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(self._connect_btn)
         lay.addWidget(self._spinner)
+        return w
+
+    def _build_browser_row(self) -> QWidget:
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        self._tor_browser_btn = QPushButton("TOR BROWSER")
+        self._tor_browser_btn.setObjectName("torBrowserBtn")
+        self._tor_browser_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tor_browser_btn.setEnabled(False)
+        self._tor_browser_btn.setToolTip(
+            "Open Firefox with a temporary profile routed through Tor.\n"
+            "Your normal Firefox is untouched."
+        )
+        self._tor_browser_btn.clicked.connect(self._on_open_tor_browser)
+
+        self._i2p_browser_btn = QPushButton("I2P BROWSER")
+        self._i2p_browser_btn.setObjectName("i2pBrowserBtn")
+        self._i2p_browser_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._i2p_browser_btn.setEnabled(False)
+        self._i2p_browser_btn.setToolTip(
+            "Open Firefox with a temporary profile routed through I2P.\n"
+            "Your normal Firefox is untouched."
+        )
+        self._i2p_browser_btn.clicked.connect(self._on_open_i2p_browser)
+
+        lay.addWidget(self._tor_browser_btn)
+        lay.addWidget(self._i2p_browser_btn)
         return w
 
     def _build_log(self) -> QWidget:
@@ -335,9 +378,17 @@ class MainWindow(QMainWindow):
         self._settings.open()
 
     def _open_settings_tab(self, tag: str) -> None:
-        tab_map = {"tor": 0, "dnscrypt": 1, "i2p": 2, "lokinet": 3}
+        tab_map = {"tor": 0, "dnscrypt": 1, "i2p": 2, "onion_server": 3}
         self._settings._tabs.setCurrentIndex(tab_map.get(tag, 0))
         self._open_settings()
+
+    def _on_tor_toggled(self, _tag: str, checked: bool) -> None:
+        if not checked and self._card_onion.is_checked:
+            self._card_onion._toggle.setChecked(False, silent=True)
+
+    def _on_onion_toggled(self, _tag: str, checked: bool) -> None:
+        if checked and not self._card_tor.is_checked:
+            self._card_tor._toggle.setChecked(True, silent=True)
 
     # ── status helpers ────────────────────────────────────────
 
@@ -365,10 +416,10 @@ class MainWindow(QMainWindow):
             self._start_worker("disconnect", {})
         else:
             layers = {
-                "use_tor":      self._card_tor.is_checked,
-                "use_dnscrypt": self._card_dns.is_checked,
-                "use_i2p":      self._card_i2p.is_checked,
-                "use_lokinet":  self._card_loki.is_checked,
+                "use_tor":          self._card_tor.is_checked,
+                "use_dnscrypt":     self._card_dns.is_checked,
+                "use_i2p":          self._card_i2p.is_checked,
+                "use_onion_server": self._card_onion.is_checked,
             }
             if not any(layers.values()):
                 self._append_log("[!] Select at least one privacy layer.")
@@ -402,6 +453,7 @@ class MainWindow(QMainWindow):
         self._spinner.stop()
         self._connect_btn.setEnabled(True)
         self._set_cards_enabled(True)
+        self._worker = None
 
         if self._quitting:
             self._do_quit()
@@ -412,10 +464,12 @@ class MainWindow(QMainWindow):
             self._connect_btn.setChecked(True)
             self._connect_btn.setText("DISCONNECT")
             self._set_glow("on")
-            layers_str = "  ·  ".join(l.upper() for l in self._active_layers)
+            layers_str = "  ·  ".join(l.upper().replace("_", " ") for l in self._active_layers)
             self._set_status("on", "PROTECTED", layers_str)
             for card in self._active_cards():
                 card.set_status("active")
+            self._tor_browser_btn.setEnabled("tor" in self._active_layers)
+            self._i2p_browser_btn.setEnabled("i2p" in self._active_layers)
 
         elif success and info == "disconnect":
             self._connected = False
@@ -425,8 +479,10 @@ class MainWindow(QMainWindow):
             self._set_glow("off")
             self._set_status("off", "DISCONNECTED", "Select layers and connect")
             for card in (self._card_tor, self._card_dns,
-                         self._card_i2p, self._card_loki):
+                         self._card_i2p, self._card_onion):
                 card.set_status("")
+            self._tor_browser_btn.setEnabled(False)
+            self._i2p_browser_btn.setEnabled(False)
 
         else:
             self._connected = False
@@ -437,20 +493,39 @@ class MainWindow(QMainWindow):
             short = info[:70] if len(info) > 70 else info
             self._set_status("error", "ERROR", short)
             for card in (self._card_tor, self._card_dns,
-                         self._card_i2p, self._card_loki):
+                         self._card_i2p, self._card_onion):
                 card.set_status("error" if card.is_checked else "")
+            self._tor_browser_btn.setEnabled(False)
+            self._i2p_browser_btn.setEnabled(False)
             self._append_log(f"[ERR] {info}")
+
+    # ── privacy browser ──────────────────────────────────────
+
+    def _on_open_tor_browser(self) -> None:
+        try:
+            socks_port = cfg().get("tor", "socks_port")
+            browser.launch_tor(socks_port, self._append_log)
+        except Exception as exc:
+            self._append_log(f"[BROWSER] Error: {exc}")
+
+    def _on_open_i2p_browser(self) -> None:
+        try:
+            http_port  = cfg().get("i2p", "http_port")
+            socks_port = cfg().get("i2p", "socks_port")
+            browser.launch_i2p(http_port, socks_port, self._append_log)
+        except Exception as exc:
+            self._append_log(f"[BROWSER] Error: {exc}")
 
     # ── helpers ───────────────────────────────────────────────
 
     def _active_cards(self) -> list[ServiceCard]:
         return [c for c in (self._card_tor, self._card_dns,
-                             self._card_i2p, self._card_loki)
+                             self._card_i2p, self._card_onion)
                 if c.is_checked]
 
     def _set_cards_enabled(self, enabled: bool) -> None:
         for card in (self._card_tor, self._card_dns,
-                     self._card_i2p, self._card_loki):
+                     self._card_i2p, self._card_onion):
             card.set_enabled_ui(enabled)
 
     def _append_log(self, msg: str) -> None:
@@ -764,7 +839,9 @@ class MainWindow(QMainWindow):
     # ── close event ───────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
-        """X butonuna basılınca kapat değil, tray'e / taskbar'a küçült."""
+        if self._quitting:
+            event.accept()
+            return
         event.ignore()
         if self._tray_proc and self._tray_proc.poll() is None:
             self.hide()

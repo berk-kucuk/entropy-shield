@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QScrollArea,
     QPushButton, QLabel, QSpinBox, QLineEdit, QTabWidget,
-    QApplication, QSizePolicy,
+    QApplication, QSizePolicy, QFileDialog,
 )
 from PyQt6.QtCore import (
     Qt, QRect, QPropertyAnimation, QEasingCurve, pyqtSignal,
@@ -100,11 +100,11 @@ class SettingsPanel(QWidget):
 
     def _build_tabs(self) -> QTabWidget:
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._tab_tor(),      "TOR")
-        self._tabs.addTab(self._tab_dnscrypt(), "DNSCRYPT")
-        self._tabs.addTab(self._tab_i2p(),      "I2P")
-        self._tabs.addTab(self._tab_lokinet(),  "LOKINET")
-        self._tabs.addTab(self._tab_general(),  "GENERAL")
+        self._tabs.addTab(self._tab_tor(),          "TOR")
+        self._tabs.addTab(self._tab_dnscrypt(),     "DNSCRYPT")
+        self._tabs.addTab(self._tab_i2p(),          "I2P")
+        self._tabs.addTab(self._tab_onion_server(), "ONION SERVER")
+        self._tabs.addTab(self._tab_general(),      "GENERAL")
         return self._tabs
 
     def _build_footer(self) -> QWidget:
@@ -219,28 +219,43 @@ class SettingsPanel(QWidget):
         lay.addStretch()
         return w
 
-    def _tab_lokinet(self) -> QWidget:
+    def _tab_onion_server(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(14)
 
-        self._loki_socks   = self._spinbox(1024, 65535)
-        self._loki_exit    = QLineEdit()
-        self._loki_exit.setPlaceholderText("exit.loki  (empty = relay mode)")
-        self._loki_use_exit = ToggleSwitch(checked=False)
+        self._onion_local_port = self._spinbox(1, 65535)
+        self._onion_hs_port    = self._spinbox(1, 65535)
 
-        lay.addWidget(self._section("LOKINET"))
-        lay.addLayout(self._row("SOCKS Port", self._loki_socks))
-        lay.addSpacing(8)
-        lay.addWidget(self._section("EXIT NODE"))
-        lay.addLayout(self._row("Exit Node (.loki)", self._loki_exit))
-        lay.addLayout(self._row("Use Exit Node", self._loki_use_exit))
+        # Directory picker: QLineEdit + Browse button side by side
+        self._onion_serve_dir = QLineEdit()
+        self._onion_serve_dir.setPlaceholderText("Default: home directory")
+        browse_btn = QPushButton("Browse")
+        browse_btn.setObjectName("closeBtn")
+        browse_btn.setFixedWidth(72)
+        browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse_btn.clicked.connect(self._browse_serve_dir)
+
+        dir_widget = QWidget()
+        dir_lay = QHBoxLayout(dir_widget)
+        dir_lay.setContentsMargins(0, 0, 0, 0)
+        dir_lay.setSpacing(6)
+        dir_lay.addWidget(self._onion_serve_dir)
+        dir_lay.addWidget(browse_btn)
+
+        lay.addWidget(self._section("ONION HTTP SERVER"))
+        lay.addLayout(self._row("Serve Directory", dir_widget))
+        lay.addLayout(self._row("Local HTTP Port", self._onion_local_port))
+        lay.addLayout(self._row("Onion Port", self._onion_hs_port))
 
         note = QLabel(
-            "When an exit node is set, all traffic is routed through\n"
-            "Lokinet. If left empty, runs in relay mode and provides\n"
-            "access to .loki domains only."
+            "Starts a built-in HTTP file server on Local HTTP Port and\n"
+            "publishes it as a Tor hidden service (.onion).\n\n"
+            "Serve Directory: the folder whose contents will be visible\n"
+            "at your .onion address. Leave blank to use your home folder.\n\n"
+            "Enabling this automatically activates Tor. Your .onion\n"
+            "address is shown in the activity log after connecting."
         )
         note.setObjectName("settingLabel")
         note.setWordWrap(True)
@@ -249,6 +264,13 @@ class SettingsPanel(QWidget):
         lay.addWidget(note)
         lay.addStretch()
         return w
+
+    def _browse_serve_dir(self) -> None:
+        current = self._onion_serve_dir.text().strip() or ""
+        path = QFileDialog.getExistingDirectory(
+            self, "Select directory to serve", current or "")
+        if path:
+            self._onion_serve_dir.setText(path)
 
     def _tab_general(self) -> QWidget:
         w = QWidget()
@@ -289,9 +311,9 @@ class SettingsPanel(QWidget):
         self._i2p_socks.setValue(cfg().get("i2p", "socks_port"))
         self._i2p_bw.setValue(cfg().get("i2p", "max_bandwidth"))
 
-        self._loki_socks.setValue(cfg().get("lokinet", "socks_port"))
-        self._loki_exit.setText(cfg().get("lokinet", "exit_node"))
-        self._loki_use_exit.setChecked(cfg().get("lokinet", "use_exit"), silent=True)
+        self._onion_serve_dir.setText(cfg().get("onion_server", "serve_dir"))
+        self._onion_local_port.setValue(cfg().get("onion_server", "local_port"))
+        self._onion_hs_port.setValue(cfg().get("onion_server", "hs_port"))
 
         self._theme_toggle.setChecked(cfg().get("theme") == "dark", silent=True)
 
@@ -311,9 +333,9 @@ class SettingsPanel(QWidget):
         cfg().set("i2p", "socks_port",    self._i2p_socks.value())
         cfg().set("i2p", "max_bandwidth", self._i2p_bw.value())
 
-        cfg().set("lokinet", "socks_port", self._loki_socks.value())
-        cfg().set("lokinet", "exit_node",  self._loki_exit.text().strip())
-        cfg().set("lokinet", "use_exit",   self._loki_use_exit.isChecked())
+        cfg().set("onion_server", "serve_dir",  self._onion_serve_dir.text().strip())
+        cfg().set("onion_server", "local_port", self._onion_local_port.value())
+        cfg().set("onion_server", "hs_port",    self._onion_hs_port.value())
 
         theme_name = "dark" if self._theme_toggle.isChecked() else "light"
         cfg().set("theme", theme_name)

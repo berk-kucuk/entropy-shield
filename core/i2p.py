@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import subprocess
 import shutil
 import os
@@ -10,19 +11,55 @@ from .platform import is_nixos
 
 _CONFIG_PATHS = [
     "/etc/i2pd/i2pd.conf",
+    "/var/lib/i2pd/i2pd.conf",
     "/etc/i2p/i2p.conf",
 ]
 _BAK_SUFFIX    = ".entropy-shield.bak"
-_MARKER_BEGIN  = "# --- entropy-shield-i2p-begin ---"
-_MARKER_END    = "# --- entropy-shield-i2p-end ---"
+_REDSOCKS_CONF = "/tmp/entropy-shield-redsocks.conf"
+
+# Port redsocks listens on locally; must match firewall.py's REDSOCKS_PORT
+REDSOCKS_PORT = 9070
+
+
+def _set_section_option(content: str, section: str, key: str, value: str) -> str:
+    sec_pat = re.compile(r'^\[' + re.escape(section) + r'\][ \t]*$', re.MULTILINE)
+    m = sec_pat.search(content)
+
+    if not m:
+        content = content.rstrip("\n") + f"\n\n[{section}]\n{key} = {value}\n"
+        return content
+
+    next_sec  = re.search(r'^\[', content[m.end():], re.MULTILINE)
+    body_start = m.end()
+    body_end   = body_start + next_sec.start() if next_sec else len(content)
+    body       = content[body_start:body_end]
+
+    key_re = re.compile(
+        r'^[ \t]*#?[ \t]*' + re.escape(key) + r'[ \t]*=.*$',
+        re.MULTILINE,
+    )
+    if key_re.search(body):
+        new_body = key_re.sub(f'{key} = {value}', body, count=1)
+    else:
+        new_body = body.rstrip("\n") + f"\n{key} = {value}\n"
+
+    return content[:body_start] + new_body + content[body_end:]
 
 
 class I2PManager:
     def __init__(self, log: Callable[[str], None]):
-        self._log = log
-        self._config: str | None = None
-        self._was_active: bool = False
-        self._cfg_injected: bool = False
+        self._log             = log
+        self._config:          str | None                = None
+        self._was_active:      bool                      = False
+        self._redsocks_proc:   subprocess.Popen | None   = None
+        self._transparent:     bool                      = False
+
+    # ── public API ────────────────────────────────────────────
+
+    @property
+    def transparent(self) -> bool:
+        """True when redsocks is running and transparent proxy is active."""
+        return self._transparent
 
     def is_installed(self) -> bool:
         return bool(shutil.which("i2pd") or shutil.which("i2prouter"))
@@ -43,38 +80,29 @@ class I2PManager:
         if not os.path.exists(bak):
             shutil.copy2(self._config, bak)
 
-        with open(self._config, "r") as f:
+        with open(self._config) as f:
             content = f.read()
 
-        content = self._strip_block(content)
+        # Always strip the legacy wrong key (left by older versions) so a
+        # previously corrupted config is automatically healed on the next run.
+        content = re.sub(
+            r'^[ \t]*ntcpproxy[ \t]*=.*\n?', '', content, flags=re.MULTILINE
+        )
 
-        # Build config block.
-        # ntcpproxy MUST be in the [ntcp2] section (not appended after other
-        # sections — ini parsers assign keys to whatever section is current).
-        # We prepend the entire block so it comes before any existing section
-        # headers that might be in the original file.
-        block_lines = [_MARKER_BEGIN]
+        content = _set_section_option(content, "httpproxy", "enabled", "true")
+        content = _set_section_option(content, "httpproxy", "port", str(http_port))
+        content = _set_section_option(content, "socksproxy", "enabled", "true")
+        content = _set_section_option(content, "socksproxy", "port", str(socks_port))
+
         if use_tor:
-            block_lines += [
-                "[ntcp2]",
-                "ntcpproxy = socks://127.0.0.1:9050",
-            ]
-        block_lines += [
-            "[httpproxy]",
-            "enabled = true",
-            f"port = {http_port}",
-            "[socksproxy]",
-            "enabled = true",
-            f"port = {socks_port}",
-            _MARKER_END,
-            "",
-        ]
-        block = "\n".join(block_lines) + "\n"
+            tor_socks = cfg().get("tor", "socks_port")
+            content = _set_section_option(
+                content, "ntcp2", "proxy", f"socks://127.0.0.1:{tor_socks}"
+            )
 
         with open(self._config, "w") as f:
-            f.write(block + content)
+            f.write(content)
 
-        self._cfg_injected = True
         self._log(
             f"[I2P] Configured. HTTP proxy: 127.0.0.1:{http_port}  "
             f"SOCKS: 127.0.0.1:{socks_port}"
@@ -88,9 +116,20 @@ class I2PManager:
         if r.returncode != 0:
             raise RuntimeError(f"Failed to start i2pd: {r.stderr.strip()}")
         self._wait_active("i2pd", timeout=15)
-        self._log(f"[I2P] i2pd active.")
+        self._log("[I2P] i2pd active.")
+
+        if shutil.which("redsocks"):
+            self._start_redsocks()
+        else:
+            self._transparent = False
+            self._log(
+                "[I2P] redsocks not installed — running in proxy-only mode. "
+                "Install redsocks (paru -S redsocks) for full transparent routing."
+            )
 
     def stop(self) -> None:
+        self._stop_redsocks()
+
         self._log("[I2P] Stopping i2pd...")
         subprocess.run(["systemctl", "stop", "i2pd"], capture_output=True)
 
@@ -99,32 +138,75 @@ class I2PManager:
             if os.path.exists(bak):
                 shutil.copy2(bak, self._config)
                 os.unlink(bak)
-            self._cfg_injected = False
 
         if self._was_active:
             subprocess.run(["systemctl", "start", "i2pd"], capture_output=True)
 
         self._log("[I2P] i2pd stopped.")
 
-    def _strip_block(self, content: str) -> str:
-        lines  = content.splitlines(keepends=True)
-        out    = []
-        inside = False
-        for line in lines:
-            if line.strip() == _MARKER_BEGIN:
-                inside = True
-                continue
-            if line.strip() == _MARKER_END:
-                inside = False
-                continue
-            if not inside:
-                out.append(line)
-        return "".join(out)
+    # ── redsocks ──────────────────────────────────────────────
+
+    def _start_redsocks(self) -> None:
+        socks_port = cfg().get("i2p", "socks_port")
+        conf = (
+            "base {\n"
+            "    log_debug = off;\n"
+            "    log_info  = off;\n"
+            '    log       = "stderr";\n'
+            "    daemon    = off;\n"
+            "    redirector = iptables;\n"
+            "}\n"
+            "\n"
+            "redsocks {\n"
+            "    local_ip   = 127.0.0.1;\n"
+            f"    local_port = {REDSOCKS_PORT};\n"
+            "    ip         = 127.0.0.1;\n"
+            f"    port       = {socks_port};\n"
+            "    type       = socks5;\n"
+            "}\n"
+        )
+        with open(_REDSOCKS_CONF, "w") as f:
+            f.write(conf)
+
+        self._redsocks_proc = subprocess.Popen(
+            ["redsocks", "-c", _REDSOCKS_CONF],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(0.4)
+        if self._redsocks_proc.poll() is not None:
+            err = self._redsocks_proc.stderr.read().decode(errors="replace").strip()
+            self._redsocks_proc = None
+            raise RuntimeError(f"redsocks failed to start: {err or '(no output)'}")
+
+        self._transparent = True
+        self._log(
+            f"[I2P] redsocks transparent proxy active "
+            f"(:{REDSOCKS_PORT} → i2pd SOCKS :{socks_port})."
+        )
+
+    def _stop_redsocks(self) -> None:
+        if self._redsocks_proc:
+            if self._redsocks_proc.poll() is None:
+                self._redsocks_proc.terminate()
+                try:
+                    self._redsocks_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._redsocks_proc.kill()
+            self._redsocks_proc = None
+        self._transparent = False
+        try:
+            os.unlink(_REDSOCKS_CONF)
+        except FileNotFoundError:
+            pass
+
+    # ── helpers ───────────────────────────────────────────────
 
     def _find_config(self) -> str:
         for path in _CONFIG_PATHS:
-            if os.path.exists(path):
-                return path
+            resolved = os.path.realpath(path)
+            if os.path.exists(resolved):
+                return resolved
         raise RuntimeError("i2pd config not found. Is i2pd installed?")
 
     def _service_active(self, name: str) -> bool:

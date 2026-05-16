@@ -276,25 +276,20 @@ class _ServiceIcon(QWidget):
             for n in nodes:
                 p.drawEllipse(QRectF(n.x() - 2.1, n.y() - 2.1, 4.2, 4.2))
 
-        elif self._tag == "lokinet":
-            # Hexagon outline with a center node
-            hr = s * 0.41
-            path = QPainterPath()
-            for i in range(6):
-                a = math.radians(30 + i * 60)
-                px, py = cx + hr * math.cos(a), cy + hr * math.sin(a)
-                if i == 0:
-                    path.moveTo(px, py)
-                else:
-                    path.lineTo(px, py)
-            path.closeSubpath()
-            p.setPen(_pen())
-            p.setBrush(QColor(r, g, b, 22))
-            p.drawPath(path)
+        elif self._tag == "onion_server":
+            # Signal arcs from a center point (hidden service broadcasting)
+            src_y = cy + 4.5
+            for rad, alpha in [(3.0, 230), (5.5, 150), (8.0, 70)]:
+                p.setPen(_pen(alpha, 1.3))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawArc(
+                    QRectF(cx - rad, src_y - rad, rad * 2, rad * 2),
+                    30 * 16, 120 * 16,
+                )
+            # Source dot
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(r, g, b, 230))
-            nr = s * 0.13
-            p.drawEllipse(QRectF(cx - nr, cy - nr, nr * 2, nr * 2))
+            p.setBrush(QColor(r, g, b, 235))
+            p.drawEllipse(QRectF(cx - 2.0, src_y - 2.0, 4.0, 4.0))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -302,17 +297,17 @@ class _ServiceIcon(QWidget):
 # ──────────────────────────────────────────────────────────────
 
 _CARD_META: dict[str, tuple[str, str]] = {
-    "tor":      ("TOR",      "Onion routing"),
-    "dnscrypt": ("DNSCRYPT", "Encrypted DNS"),
-    "i2p":      ("I2P",      "P2P overlay"),
-    "lokinet":  ("LOKINET",  "LLARP network"),
+    "tor":          ("TOR",          "Onion routing"),
+    "dnscrypt":     ("DNSCRYPT",     "Encrypted DNS"),
+    "i2p":          ("I2P",          "P2P overlay"),
+    "onion_server": ("ONION SERVER", "Tor hidden service"),
 }
 
 _CARD_COLORS: dict[str, tuple[int, int, int]] = {
-    "tor":      (138, 110, 210),
-    "dnscrypt": ( 78, 182, 255),
-    "i2p":      ( 78, 210, 160),
-    "lokinet":  (255, 160,  60),
+    "tor":          (138, 110, 210),
+    "dnscrypt":     ( 78, 182, 255),
+    "i2p":          ( 78, 210, 160),
+    "onion_server": (210,  80, 180),
 }
 
 
@@ -326,6 +321,8 @@ class ServiceCard(QFrame):
         title, desc = _CARD_META[tag]
         ar, ag, ab  = _CARD_COLORS[tag]
         self._accent = (ar, ag, ab)
+
+        self._current_status = ""
 
         self.setObjectName("serviceCard")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -403,23 +400,69 @@ class ServiceCard(QFrame):
 
     def paintEvent(self, e) -> None:
         super().paintEvent(e)
-        ar, ag, ab = self._accent
+        ar, ag, ab   = self._accent
+        active       = self._current_status == "active"
+        connecting   = self._current_status == "connecting"
+        error        = self._current_status == "error"
+
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect   = QRectF(self.rect())
+        radius = 16.0
+
+        # ── clip to card outline ──────────────────────────────
         clip = QPainterPath()
-        clip.addRoundedRect(QRectF(self.rect()), 16, 16)
+        clip.addRoundedRect(rect, radius, radius)
         p.setClipPath(clip)
-        g = QLinearGradient(0, 0, self.width(), 0)
-        g.setColorAt(0.0, QColor(ar, ag, ab, 210))
-        g.setColorAt(0.55, QColor(ar, ag, ab, 70))
-        g.setColorAt(1.0, QColor(ar, ag, ab, 0))
-        p.fillRect(0, 0, self.width(), 3, g)
+
+        # 1. Diagonal accent tint — stronger when active
+        bg_alpha = 42 if active else (28 if connecting else 14)
+        diag = QLinearGradient(0, 0, self.width() * 0.72, self.height() * 0.72)
+        diag.setColorAt(0.0, QColor(ar, ag, ab, bg_alpha))
+        diag.setColorAt(1.0, QColor(ar, ag, ab, 0))
+        p.fillRect(rect, diag)
+
+        # 2. Left vertical accent bar
+        top_a = 255 if active else (200 if connecting else 140)
+        bot_a = 70  if active else (50  if connecting else 22)
+        bar   = QLinearGradient(0, 0, 0, self.height())
+        bar.setColorAt(0.0, QColor(ar, ag, ab, top_a))
+        bar.setColorAt(0.5, QColor(ar, ag, ab, (top_a + bot_a) // 2))
+        bar.setColorAt(1.0, QColor(ar, ag, ab, bot_a))
+        p.fillRect(QRectF(0, 0, 4, self.height()), bar)
+
+        # 3. Icon area radial glow (top-left quadrant)
+        glow = QLinearGradient(16, 16, 80, 80)
+        glow.setColorAt(0.0, QColor(ar, ag, ab, 18 if active else 9))
+        glow.setColorAt(1.0, QColor(ar, ag, ab, 0))
+        p.fillRect(QRectF(4, 0, 76, 76), glow)
+
+        # ── unclip for border ────────────────────────────────
+        p.setClipping(False)
+
+        # 4. Accent border (replaces generic CSS border when coloured state)
+        if active or connecting or error:
+            er, eg, eb = (ar, ag, ab) if not error else (210, 55, 48)
+            # Outer soft halo
+            halo = QPen(QColor(er, eg, eb, 28), 5.0)
+            p.setPen(halo)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
+            # Crisp inner border
+            border_alpha = 190 if active else 130
+            p.setPen(QPen(QColor(er, eg, eb, border_alpha), 1.5))
+            p.drawRoundedRect(
+                rect.adjusted(0.75, 0.75, -0.75, -0.75),
+                radius - 0.5, radius - 0.5,
+            )
 
     @property
     def is_checked(self) -> bool:
         return self._toggle.isChecked()
 
     def set_status(self, state: str) -> None:
+        self._current_status = state
         labels = {
             "active":     "ACTIVE",
             "connecting": "WAIT",
@@ -434,6 +477,7 @@ class ServiceCard(QFrame):
         self.setProperty("status", state)
         self.style().unpolish(self)
         self.style().polish(self)
+        self.update()   # repaint with new state
 
     def set_enabled_ui(self, enabled: bool) -> None:
         self._toggle.setEnabled(enabled)

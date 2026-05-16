@@ -39,6 +39,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     nftables \
     iptables \
     iproute2 \
+    redsocks \
     policykit-1 2>/dev/null || \
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     python3 python3-pip \
@@ -48,6 +49,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     nftables \
     iptables \
     iproute2 \
+    redsocks \
     polkitd libpolkit-agent-1-0
 
 # PyQt6 via system package first, pip as fallback

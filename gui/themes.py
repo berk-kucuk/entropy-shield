@@ -156,6 +156,21 @@ QPushButton#settingsBtn:hover {{
     border-color: {c['blue']};
     color: {c['blue']};
 }}
+QPushButton#quitBtn {{
+    background: {c['title_btn']};
+    border: 1px solid {c['border']};
+    border-radius: 14px;
+    min-width: 28px; max-width: 28px;
+    min-height: 28px; max-height: 28px;
+    color: {c['text_dim']};
+    font-size: 13px;
+    padding: 0;
+}}
+QPushButton#quitBtn:hover {{
+    background: rgba(239,80,80,0.12);
+    border-color: {c['close_hover']};
+    color: {c['close_hover']};
+}}
 
 /* ── status labels ── */
 QLabel#statusTitle {{
@@ -185,15 +200,12 @@ QFrame#serviceCard:hover {{
     border-color: {c['border_hover']};
 }}
 QFrame#serviceCard[status="active"] {{
-    border-color: {c['border_active']};
     background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
         stop:0 {card_grad_hover_stop0},stop:1 {c['card_bg_h']});
 }}
 QFrame#serviceCard[status="connecting"] {{
-    border-color: {c['yellow']};
-}}
-QFrame#serviceCard[status="error"] {{
-    border-color: {c['border_error']};
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {card_grad_hover_stop0},stop:1 {c['card_bg_h']});
 }}
 QLabel#cardTitle {{
     font-size: 11px;
@@ -271,6 +283,46 @@ QPushButton#connectBtn:disabled {{
     background: {c['card_bg']};
     border-color: {c['border_soft']};
     color: {c['text_dim']};
+}}
+
+/* ── privacy browser buttons ── */
+QPushButton#torBrowserBtn {{
+    background: {c['card_bg']};
+    border: 1.5px solid {c['border']};
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    color: {c['text_dim']};
+    letter-spacing: 3px;
+    min-height: 34px;
+    padding: 0 14px;
+}}
+QPushButton#torBrowserBtn:enabled:hover {{
+    background: rgba(98,168,255,0.10);
+    border-color: {c['blue']};
+    color: {c['blue']};
+}}
+QPushButton#torBrowserBtn:disabled {{
+    opacity: 0.35;
+}}
+QPushButton#i2pBrowserBtn {{
+    background: {c['card_bg']};
+    border: 1.5px solid {c['border']};
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    color: {c['text_dim']};
+    letter-spacing: 3px;
+    min-height: 34px;
+    padding: 0 14px;
+}}
+QPushButton#i2pBrowserBtn:enabled:hover {{
+    background: rgba(58,204,114,0.10);
+    border-color: {c['green']};
+    color: {c['green']};
+}}
+QPushButton#i2pBrowserBtn:disabled {{
+    opacity: 0.35;
 }}
 
 /* ── log ── */

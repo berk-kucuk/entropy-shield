@@ -20,6 +20,7 @@ _TORRC_TEMPLATE = """
 # --- entropy-shield-begin ---
 VirtualAddrNetworkIPv4 10.192.0.0/10
 AutomapHostsOnResolve 1
+AutomapHostsSuffixes .onion,.exit
 TransPort  127.0.0.1:{trans_port}
 DNSPort    127.0.0.1:{dns_port}
 SocksPort  127.0.0.1:{socks_port}

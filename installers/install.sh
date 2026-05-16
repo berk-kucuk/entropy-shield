@@ -84,6 +84,20 @@ install_packages_arch() {
         iptables-nft \
         iproute2 \
         polkit
+
+    # redsocks is in AUR — install via available helper, warn if none
+    if command -v paru &>/dev/null; then
+        echo "[*] Installing redsocks from AUR via paru..."
+        sudo -u "${SUDO_USER:-$USER}" paru -S --noconfirm redsocks 2>/dev/null || \
+            echo "[!] redsocks AUR install failed. Run 'paru -S redsocks' manually for transparent I2P routing."
+    elif command -v yay &>/dev/null; then
+        echo "[*] Installing redsocks from AUR via yay..."
+        sudo -u "${SUDO_USER:-$USER}" yay -S --noconfirm redsocks 2>/dev/null || \
+            echo "[!] redsocks AUR install failed. Run 'yay -S redsocks' manually for transparent I2P routing."
+    else
+        echo "[!] No AUR helper found. Install redsocks manually for transparent I2P routing:"
+        echo "    paru -S redsocks   OR   yay -S redsocks"
+    fi
 }
 
 install_packages_debian() {
@@ -114,6 +128,15 @@ install_packages_debian() {
         i2pd 2>/dev/null || \
         echo "[!] i2pd not found in apt repos. Add the i2pd repo or install manually."
 
+    # redsocks: transparent SOCKS proxy redirector for I2P
+    if ! command -v redsocks &>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            redsocks 2>/dev/null || \
+            echo "[!] redsocks not found. Transparent I2P routing unavailable."
+    else
+        echo "[>] redsocks already installed, skipping."
+    fi
+
     install_pyqt6 apt python3-pyqt6
 }
 
@@ -126,6 +149,17 @@ install_packages_fedora() {
         iptables \
         iproute \
         polkit
+
+    if ! command -v redsocks &>/dev/null; then
+        dnf install -y -q redsocks 2>/dev/null || {
+            echo "[!] redsocks not in main repo, trying COPR..."
+            dnf copr enable -y zawertun/redsocks 2>/dev/null || true
+            dnf install -y -q redsocks 2>/dev/null || \
+                echo "[!] redsocks not installed. Transparent I2P routing unavailable."
+        }
+    else
+        echo "[>] redsocks already installed, skipping."
+    fi
 
     # dnscrypt-proxy — try main repo, then Copr
     dnf install -y -q dnscrypt-proxy 2>/dev/null || {
@@ -163,6 +197,13 @@ install_packages_opensuse() {
 
     zypper install -y i2pd 2>/dev/null || \
         echo "[!] i2pd not found in zypper repos. Install manually if needed."
+
+    if ! command -v redsocks &>/dev/null; then
+        zypper install -y redsocks 2>/dev/null || \
+            echo "[!] redsocks not found in zypper repos. Transparent I2P routing unavailable."
+    else
+        echo "[>] redsocks already installed, skipping."
+    fi
 
     install_pyqt6 zypper python3-qt6
 }

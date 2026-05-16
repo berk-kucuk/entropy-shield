@@ -77,6 +77,7 @@ in
     pythonEnv
     pkgs.dnscrypt-proxy
     pkgs.i2pd
+    pkgs.redsocks
     desktopEntry
     (pkgs.writeShellScriptBin "entropy-shield" ''
       exec ${pythonEnv}/bin/python3 /opt/entropy-shield/main.py "$@"

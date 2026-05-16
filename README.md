@@ -8,7 +8,7 @@
 
 # Entropy Shield
 
-**A modern Linux desktop privacy stack — Tor · DNSCrypt · I2P · Lokinet**
+**A modern Linux desktop privacy stack — Tor · DNSCrypt · I2P · Onion Server**
 
 [![Website](https://img.shields.io/badge/Website-entropy--shield.berkkucukk.com-0f172a?style=flat-square&logo=googlechrome&logoColor=white)](https://entropy-shield.berkkucukk.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
@@ -47,7 +47,7 @@
 
 Entropy Shield is a graphical frontend for managing multiple privacy and anonymity services on Linux. Instead of manually configuring `torrc`, writing nftables rules, and restarting daemons, Entropy Shield does it all through a single polished interface.
 
-It routes your traffic through whichever combination of layers you choose — Tor transparent proxy, encrypted DNS via DNSCrypt, the I2P anonymity network, or Lokinet — then tears everything back down cleanly when you disconnect. System configs are backed up before modification and restored on exit.
+It routes your traffic through whichever combination of layers you choose — Tor transparent proxy, encrypted DNS via DNSCrypt, the I2P anonymity network, or a self-hosted Tor hidden service — then tears everything back down cleanly when you disconnect. System configs are backed up before modification and restored on exit.
 
 > **Website:** [entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)
 
@@ -57,12 +57,15 @@ It routes your traffic through whichever combination of layers you choose — To
 
 | | Feature |
 |---|---|
-| 🔒 | **Layered privacy** — combine Tor, DNSCrypt, I2P, and Lokinet in any combination |
+| 🔒 | **Layered privacy** — combine Tor, DNSCrypt, I2P, and Onion Server in any combination |
 | 🔥 | **Firewall integration** — nftables/iptables rules applied and removed automatically |
+| 🛡️ | **IPv6 leak protection** — separate `table ip6` rules block IPv6 leaks under Tor; DNSCrypt redirects IPv6 DNS queries too |
+| 🧅 | **Onion Server** — publish any local directory as a Tor hidden service with a built-in HTTP file server |
+| 🦊 | **Privacy browsers** — launch isolated Firefox instances pre-configured for Tor or I2P without touching your normal profile |
 | 🌙 | **Dark & Light themes** — polished animated UI with glowing status border |
 | 🗂️ | **System tray** — minimize to tray, disconnect or quit from the notification area |
 | ♻️ | **Zero footprint** — all config changes are backed up and reverted on disconnect |
-| ⚙️ | **Per-service settings** — configure ports, exit nodes, DNSSEC, bandwidth limits, and more |
+| ⚙️ | **Per-service settings** — configure ports, exit nodes, DNSSEC, bandwidth limits, serve directory, and more |
 | 🐧 | **Multi-distro support** — one universal installer for Arch, Debian, Fedora, openSUSE, NixOS |
 | ❄️ | **NixOS native** — declarative NixOS module, no mutable config patching |
 
@@ -76,32 +79,47 @@ It routes your traffic through whichever combination of layers you choose — To
 
 ### 🧅 Tor
 
-Transparent proxy that routes **all TCP traffic** through the Tor network using nftables `REDIRECT` rules. DNS queries are redirected to Tor's `DNSPort`, preventing leaks. Supports custom exit nodes and `StrictNodes`.
+Transparent proxy that routes **all TCP traffic** through the Tor network using nftables `REDIRECT` rules. DNS queries are redirected to Tor's `DNSPort`. **All IPv6 is blocked** to prevent leaks since Tor's TransPort is IPv4-only. Supports custom exit nodes and `StrictNodes`.
 
 </td>
 <td align="center" width="25%">
 
 ### 🔐 DNSCrypt
 
-Encrypts DNS queries using [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy). Enforces no-log and no-filter server requirements. Stops `systemd-resolved` temporarily to avoid port conflicts, restores it on disconnect.
+Encrypts DNS queries using [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy). Redirects both **IPv4 and IPv6** DNS traffic through the proxy to prevent leaks. Enforces no-log and no-filter server requirements. Integrates with `systemd-resolved` via `resolvectl`.
 
 </td>
 <td align="center" width="25%">
 
 ### 🌐 I2P
 
-Starts [i2pd](https://i2pd.website) and configures its HTTP proxy (`127.0.0.1:4444`) and SOCKS proxy (`127.0.0.1:4447`). When used together with Tor, I2P traffic is tunnelled through Tor's SOCKS port for additional anonymity.
+Starts [i2pd](https://i2pd.website) and configures its HTTP proxy and SOCKS proxy. When `redsocks` is installed, enables **full transparent proxy** mode for all TCP. When used together with Tor, I2P's outbound traffic tunnels through Tor's SOCKS port for additional anonymity.
 
 </td>
 <td align="center" width="25%">
 
-### 🦎 Lokinet
+### 📡 Onion Server
 
-Routes traffic through [Lokinet](https://lokinet.org), an onion-routing network built on the Oxen blockchain. Configurable SOCKS port and optional exit node selection.
+Starts a built-in **HTTP file server** and publishes it as a Tor hidden service. Choose any directory to serve — its contents become accessible at a `.onion` address shown in the activity log. Requires Tor to be active (enforced automatically).
 
 </td>
 </tr>
 </table>
+
+---
+
+## Privacy Browsers
+
+The **TOR BROWSER** and **I2P BROWSER** buttons (enabled after connecting) launch Firefox with a **fully isolated temporary profile** pre-configured for the active network. Your normal Firefox profile is never touched.
+
+| Button | Proxy configuration |
+|---|---|
+| TOR BROWSER | SOCKS5 → `127.0.0.1:9050` with remote DNS (`socks_remote_dns=true`), WebRTC disabled |
+| I2P BROWSER | HTTP proxy → `127.0.0.1:4444`, SOCKS5 → `127.0.0.1:4447`, homepage set to I2P router console |
+
+Both instances disable DNS prefetch, HTTPS prefetch, and media peer connections to prevent any DNS or IP leaks.
+
+> **Note:** Browsers with DNS-over-HTTPS (DoH) enabled bypass nftables rules entirely since DoH uses regular HTTPS (port 443). The privacy browser instances have DoH disabled. For your normal browser, disable DoH manually if you rely on DNSCrypt.
 
 ---
 
@@ -132,6 +150,8 @@ Routes traffic through [Lokinet](https://lokinet.org), an onion-routing network 
 | Tor | `tor` |
 | DNSCrypt | `dnscrypt-proxy` |
 | I2P | `i2pd` |
+| Transparent I2P proxy (optional) | `redsocks` |
+| Firefox (privacy browser buttons) | `firefox` or `firefox-esr` |
 | Firewall | `nftables` / `iptables` |
 
 ---
@@ -213,10 +233,18 @@ The application requests elevated privileges via `pkexec` on first launch. After
 
 **Workflow:**
 
-1. Toggle the service cards you want to activate (Tor, DNSCrypt, I2P, Lokinet)
+1. Toggle the service cards you want to activate (Tor, DNSCrypt, I2P, Onion Server)
 2. Click **CONNECT** — services start, firewall rules are applied, DNS is redirected
 3. The status ring turns green and the border glows to confirm protection is active
-4. Click **DISCONNECT** to stop all services and restore original system configuration
+4. Optionally click **TOR BROWSER** or **I2P BROWSER** to open an isolated Firefox window
+5. Click **DISCONNECT** to stop all services and restore the original system configuration
+
+**Onion Server:**
+
+1. Open Settings → **ONION SERVER** tab
+2. Set the directory you want to publish and configure ports
+3. Enable the **ONION SERVER** card (Tor is activated automatically)
+4. Click **CONNECT** — your `.onion` address appears in the activity log once Tor bootstraps
 
 **System tray:** Closing the window minimises to the system tray. Right-click the tray icon to show the window, disconnect, or quit.
 
@@ -240,7 +268,7 @@ Settings are stored at `~/.config/entropy-shield/config.json` and can be edited 
     "strict_nodes": false
   },
   "dnscrypt": {
-    "port": 5300,
+    "port": 5353,
     "require_dnssec": false,
     "require_nolog": true,
     "require_nofilter": true
@@ -250,10 +278,10 @@ Settings are stored at `~/.config/entropy-shield/config.json` and can be edited 
     "socks_port": 4447,
     "max_bandwidth": 0
   },
-  "lokinet": {
-    "socks_port": 1090,
-    "exit_node": "",
-    "use_exit": false
+  "onion_server": {
+    "local_port": 8080,
+    "hs_port": 80,
+    "serve_dir": ""
   }
 }
 ```
@@ -277,6 +305,14 @@ Strict Nodes: ✓
 | Require no-filter | Exclude resolvers that apply content filtering |
 | Require DNSSEC | Only use DNSSEC-validating resolvers |
 
+### Onion Server Options
+
+| Option | Description |
+|---|---|
+| Serve Directory | Local folder to publish — leave blank to use your home directory |
+| Local HTTP Port | Port the built-in HTTP server binds on (`127.0.0.1`) |
+| Onion Port | Port exposed on the `.onion` address (usually `80`) |
+
 ---
 
 ## Architecture
@@ -288,17 +324,18 @@ entropy-shield/
 │   ├── config.py            # JSON config with deep-merge defaults
 │   ├── connection.py        # Orchestrates all layers (connect / disconnect)
 │   ├── tor.py               # torrc patching, DNS redirect, systemd control
-│   ├── dnscrypt.py          # dnscrypt-proxy config, resolved integration
-│   ├── i2p.py               # i2pd config, Tor-tunnel mode
-│   ├── lokinet.py           # Lokinet SOCKS proxy management
-│   ├── firewall.py          # nftables / iptables transparent proxy rules
+│   ├── dnscrypt.py          # dnscrypt-proxy config, IPv6 listen, resolved integration
+│   ├── i2p.py               # i2pd config, redsocks transparent proxy, Tor-tunnel mode
+│   ├── onion_server.py      # Tor hidden service config + built-in HTTP file server
+│   ├── browser.py           # Isolated Firefox launcher (Tor / I2P profiles)
+│   ├── firewall.py          # nftables / iptables rules, IPv6 leak prevention
 │   ├── tray_helper.py       # System tray subprocess (runs as real user)
-│   └── platform.py          # NixOS detection
+│   └── platform.py          # NixOS detection, firewall backend selection
 ├── gui/
 │   ├── main_window.py       # Main window, animated glow border, worker thread
 │   ├── settings_panel.py    # Slide-in settings overlay
 │   ├── themes.py            # Dark / Light theme palette + QSS generation
-│   └── widgets.py           # ServiceCard, StatusRing, Spinner
+│   └── widgets.py           # ServiceCard, StatusRing, Spinner, ToggleSwitch
 ├── logos/
 │   └── entropy-logo.png
 ├── screenshots/
@@ -312,21 +349,37 @@ entropy-shield/
 
 ### How it works
 
-Entropy Shield runs as root (via `pkexec`) to manage system services and firewall rules. The system tray helper is launched as a subprocess under the original user's session to access the D-Bus session bus and register the SNI tray icon — this avoids the common problem where root processes cannot reach the user's display server or notification area.
+Entropy Shield runs as root (via `pkexec`) to manage system services and firewall rules. The system tray helper is launched as a subprocess under the original user's session to access the D-Bus session bus and register the SNI tray icon — this avoids the common problem where root processes cannot reach the user's display server.
+
+Privacy browser instances are also launched under the real user's identity (not root) with a temporary isolated profile written to `/tmp/entropy-shield-ff-{tor,i2p}/`.
 
 **CONNECT flow:**
 
 1. Selected service configs are patched (originals backed up with `.entropy-shield.bak` suffix)
-2. Services are started via `systemctl restart`
-3. `FirewallManager` applies nftables rules to redirect all TCP through the transparent proxy
-4. DNS is redirected through the active service's local listener port
+2. If Onion Server is enabled, the hidden service block is appended to `torrc` and the HTTP file server starts on `127.0.0.1:local_port`
+3. Services are started via `systemctl restart`
+4. `systemd-resolved` is pointed at the active proxy via `resolvectl` (when running)
+5. `FirewallManager` applies nftables rules:
+   - Tor mode: TCP → `TransPort`, DNS → `DNSPort`, **all IPv6 dropped**
+   - DNSCrypt mode: DNS (UDP+TCP, IPv4 and IPv6) → dnscrypt-proxy
+   - I2P mode: optionally TCP → `redsocks` → i2pd SOCKS
 
 **DISCONNECT flow:**
 
-1. Firewall rules are flushed
-2. All started services are stopped
-3. Config files are restored from backup
-4. DNS and `systemd-resolved` are restored to their pre-connection state
+1. DNS settings are restored via `resolvectl`
+2. Firewall rules are flushed (`table ip` and `table ip6`)
+3. HTTP file server is shut down (non-blocking background thread)
+4. All started services are stopped
+5. Config files are restored from `.entropy-shield.bak` backups
+6. System proxy environment variables are cleared
+
+### DNS leak prevention
+
+| Scenario | IPv4 DNS | IPv6 DNS |
+|---|---|---|
+| Tor active | Redirected to `DNSPort` | Entire IPv6 stack blocked |
+| DNSCrypt active | Redirected to dnscrypt-proxy | Redirected to `[::1]:port` (dnscrypt-proxy listens on both) |
+| Tor + DNSCrypt | Redirected through dnscrypt-proxy | IPv6 stack blocked by Tor rules |
 
 ---
 
@@ -352,6 +405,6 @@ MIT © [Berk Küçük](https://berkkucukk.com)
 
 **[entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)**
 
-<sub>Built with Python · PyQt6 · Tor · DNSCrypt · I2P · Lokinet</sub>
+<sub>Built with Python · PyQt6 · Tor · DNSCrypt · I2P · Onion Server</sub>
 
 </div>

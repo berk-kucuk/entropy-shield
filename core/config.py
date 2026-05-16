@@ -15,7 +15,7 @@ _DEFAULTS: dict = {
         "strict_nodes": False,
     },
     "dnscrypt": {
-        "port":              5300,
+        "port":              5353,
         "require_dnssec":    False,
         "require_nolog":     True,
         "require_nofilter":  True,
@@ -25,10 +25,10 @@ _DEFAULTS: dict = {
         "socks_port":    4447,
         "max_bandwidth": 0,
     },
-    "lokinet": {
-        "socks_port": 1090,
-        "exit_node":  "",
-        "use_exit":   False,
+    "onion_server": {
+        "local_port": 8080,
+        "hs_port":    80,
+        "serve_dir":  "",
     },
 }
 
