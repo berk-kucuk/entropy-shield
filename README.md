@@ -185,7 +185,8 @@ The installer handles everything:
 
 ```bash
 # Arch Linux / Manjaro / EndeavourOS
-bash installers/install-arch.sh
+paru -S entropy-shield
+yay -S entropy-shield
 
 # Debian / Ubuntu / Linux Mint / Kali / Pop!_OS
 bash installers/install-debian.sh
