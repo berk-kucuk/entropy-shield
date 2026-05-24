@@ -1,7 +1,5 @@
 <div align="center">
 
-### [🌐 entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)
-
 <br/>
 
 <img src="logos/entropy-logo.png" alt="Entropy Shield Logo" width="120" />
