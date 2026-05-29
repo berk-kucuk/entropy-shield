@@ -5,10 +5,10 @@ import subprocess
 import pwd
 from typing import Callable
 
-# Temp profile directories — reused across launches so Firefox remembers
-# the session, but user.js is always rewritten with fresh proxy settings.
-_PROFILE_TOR = "/tmp/entropy-shield-ff-tor"
-_PROFILE_I2P = "/tmp/entropy-shield-ff-i2p"
+_PROFILE_TOR      = "/tmp/entropy-shield-ff-tor"
+_PROFILE_I2P      = "/tmp/entropy-shield-ff-i2p"
+_PROFILE_CR_TOR   = "/tmp/entropy-shield-cr-tor"
+_PROFILE_CR_I2P   = "/tmp/entropy-shield-cr-i2p"
 
 _TOR_USER_JS = """\
 user_pref("network.proxy.type", 1);
@@ -42,6 +42,15 @@ user_pref("media.peerconnection.enabled", false);
 user_pref("browser.startup.homepage", "http://127.0.0.1:{http_port}");
 """
 
+# Chromium/Brave candidates in priority order
+_CHROMIUM_BINS = [
+    "brave", "brave-browser",
+    "chromium", "chromium-browser", "chromium-stable",
+    "google-chrome", "google-chrome-stable",
+]
+
+_FIREFOX_BINS = ["firefox", "firefox-esr"]
+
 
 def _real_user() -> tuple[int, pwd.struct_passwd] | None:
     for var in ("PKEXEC_UID", "SUDO_UID"):
@@ -56,7 +65,6 @@ def _real_user() -> tuple[int, pwd.struct_passwd] | None:
 
 
 def _session_env(uid: int, pw: pwd.struct_passwd) -> dict[str, str]:
-    """Collect the minimum display/wayland env needed to spawn a GUI app."""
     runtime_dir = f"/run/user/{uid}"
     env: dict[str, str] = {
         "HOME":                     pw.pw_dir,
@@ -90,7 +98,6 @@ def _session_env(uid: int, pw: pwd.struct_passwd) -> dict[str, str]:
     except Exception:
         pass
 
-    # Wayland socket fallback
     if "WAYLAND_DISPLAY" not in env and "DISPLAY" not in env:
         try:
             for f in os.listdir(runtime_dir):
@@ -103,8 +110,24 @@ def _session_env(uid: int, pw: pwd.struct_passwd) -> dict[str, str]:
     return env
 
 
-def _prepare_profile(profile_dir: str, user_js: str,
-                     uid: int, gid: int) -> None:
+def _find_firefox() -> str | None:
+    for b in _FIREFOX_BINS:
+        p = shutil.which(b)
+        if p:
+            return p
+    return None
+
+
+def _find_chromium() -> str | None:
+    for b in _CHROMIUM_BINS:
+        p = shutil.which(b)
+        if p:
+            return p
+    return None
+
+
+def _prepare_firefox_profile(profile_dir: str, user_js: str,
+                              uid: int, gid: int) -> None:
     os.makedirs(profile_dir, exist_ok=True)
     user_js_path = os.path.join(profile_dir, "user.js")
     with open(user_js_path, "w") as f:
@@ -116,57 +139,109 @@ def _prepare_profile(profile_dir: str, user_js: str,
         pass
 
 
-def _spawn_firefox(profile_dir: str, pw: pwd.struct_passwd,
-                   env: dict[str, str], log: Callable[[str], None]) -> None:
-    ff = shutil.which("firefox") or shutil.which("firefox-esr")
-    if not ff:
-        raise RuntimeError(
-            "Firefox not found. Install firefox or firefox-esr.")
-
-    ff_args = [ff, "--no-remote", "--profile", profile_dir]
-
+def _spawn_as_user(cmd: list[str], pw: pwd.struct_passwd,
+                   env: dict[str, str]) -> None:
     launched = False
-    for cmd in (
-        ["runuser", "-u", pw.pw_name, "--"] + ff_args,
+    for prefix in (
+        ["runuser", "-u", pw.pw_name, "--"],
         ["su", "-s", "/bin/sh", pw.pw_name, "-c",
-         " ".join(f'"{a}"' if " " in a else a for a in ff_args)],
+         " ".join(f'"{a}"' if " " in a else a for a in cmd)],
     ):
         try:
-            subprocess.Popen(cmd, env=env,
+            if prefix[0] in ("runuser",):
+                full = prefix + cmd
+            else:
+                full = prefix  # su variant already embeds cmd
+            subprocess.Popen(full, env=env,
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
             launched = True
             break
         except FileNotFoundError:
             continue
-
     if not launched:
         raise RuntimeError("runuser/su not found — cannot launch browser as user.")
-    log(f"[BROWSER] Firefox launched (profile: {profile_dir}).")
 
+
+# ── public API ────────────────────────────────────────────────
 
 def launch_tor(socks_port: int, log: Callable[[str], None]) -> None:
-    """Open a fresh Firefox window routed entirely through Tor's SocksPort."""
+    """Open an isolated browser window routed through Tor's SocksPort."""
     info = _real_user()
     if info is None:
         raise RuntimeError(
             "Cannot determine real user UID (run via sudo or pkexec).")
     uid, pw = info
     env = _session_env(uid, pw)
-    user_js = _TOR_USER_JS.format(socks_port=socks_port)
-    _prepare_profile(_PROFILE_TOR, user_js, uid, pw.pw_gid)
-    _spawn_firefox(_PROFILE_TOR, pw, env, log)
+
+    ff = _find_firefox()
+    if ff:
+        user_js = _TOR_USER_JS.format(socks_port=socks_port)
+        _prepare_firefox_profile(_PROFILE_TOR, user_js, uid, pw.pw_gid)
+        cmd = [ff, "--no-remote", "--profile", _PROFILE_TOR]
+        _spawn_as_user(cmd, pw, env)
+        log(f"[BROWSER] Firefox launched via Tor (profile: {_PROFILE_TOR}).")
+        return
+
+    cr = _find_chromium()
+    if cr:
+        os.makedirs(_PROFILE_CR_TOR, exist_ok=True)
+        try:
+            os.chown(_PROFILE_CR_TOR, uid, pw.pw_gid)
+        except Exception:
+            pass
+        cmd = [
+            cr,
+            f"--proxy-server=socks5://127.0.0.1:{socks_port}",
+            "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost",
+            f"--user-data-dir={_PROFILE_CR_TOR}",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-sync", "--incognito",
+        ]
+        _spawn_as_user(cmd, pw, env)
+        log(f"[BROWSER] {os.path.basename(cr)} launched via Tor.")
+        return
+
+    raise RuntimeError(
+        "No supported browser found. Install firefox, chromium, or brave.")
 
 
 def launch_i2p(http_port: int, socks_port: int,
                log: Callable[[str], None]) -> None:
-    """Open a fresh Firefox window routed through I2P's HTTP proxy."""
+    """Open an isolated browser window routed through I2P's HTTP proxy."""
     info = _real_user()
     if info is None:
         raise RuntimeError(
             "Cannot determine real user UID (run via sudo or pkexec).")
     uid, pw = info
     env = _session_env(uid, pw)
-    user_js = _I2P_USER_JS.format(http_port=http_port, socks_port=socks_port)
-    _prepare_profile(_PROFILE_I2P, user_js, uid, pw.pw_gid)
-    _spawn_firefox(_PROFILE_I2P, pw, env, log)
+
+    ff = _find_firefox()
+    if ff:
+        user_js = _I2P_USER_JS.format(http_port=http_port, socks_port=socks_port)
+        _prepare_firefox_profile(_PROFILE_I2P, user_js, uid, pw.pw_gid)
+        cmd = [ff, "--no-remote", "--profile", _PROFILE_I2P]
+        _spawn_as_user(cmd, pw, env)
+        log(f"[BROWSER] Firefox launched via I2P (profile: {_PROFILE_I2P}).")
+        return
+
+    cr = _find_chromium()
+    if cr:
+        os.makedirs(_PROFILE_CR_I2P, exist_ok=True)
+        try:
+            os.chown(_PROFILE_CR_I2P, uid, pw.pw_gid)
+        except Exception:
+            pass
+        cmd = [
+            cr,
+            f"--proxy-server=http://127.0.0.1:{http_port}",
+            f"--user-data-dir={_PROFILE_CR_I2P}",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-sync",
+        ]
+        _spawn_as_user(cmd, pw, env)
+        log(f"[BROWSER] {os.path.basename(cr)} launched via I2P.")
+        return
+
+    raise RuntimeError(
+        "No supported browser found. Install firefox, chromium, or brave.")

@@ -6,7 +6,7 @@ _DIR  = Path.home() / ".config" / "entropy-shield"
 _FILE = _DIR / "config.json"
 
 _DEFAULTS: dict = {
-    "theme": "dark",
+    "theme": "oled",
     "tor": {
         "trans_port":   9040,
         "dns_port":     5300,
@@ -30,13 +30,21 @@ _DEFAULTS: dict = {
         "hs_port":    80,
         "serve_dir":  "",
     },
+    "kill_switch":  True,
+    "auto_connect": False,
+    "autostart":    True,
 }
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
+    """Merge override into base, keeping ONLY keys defined in base.
+    Keys in override that are not in base (deprecated keys) are silently dropped.
+    """
     result = dict(base)
     for k, v in override.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+        if k not in result:
+            continue  # drop deprecated / unknown keys
+        if isinstance(result[k], dict) and isinstance(v, dict):
             result[k] = _deep_merge(result[k], v)
         else:
             result[k] = v

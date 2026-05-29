@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QScrollArea,
     QPushButton, QLabel, QSpinBox, QLineEdit, QTabWidget,
-    QApplication, QSizePolicy, QFileDialog,
+    QApplication, QSizePolicy, QFileDialog, QMessageBox, QComboBox,
 )
 from PyQt6.QtCore import (
     Qt, QRect, QPropertyAnimation, QEasingCurve, pyqtSignal,
@@ -14,6 +14,7 @@ from PyQt6.QtGui import QPainter, QColor, QLinearGradient
 from gui.themes import current as theme
 from gui.widgets import ToggleSwitch
 from core.config import cfg
+import core.autostart as autostart
 
 _PANEL_W = 430
 
@@ -278,18 +279,35 @@ class SettingsPanel(QWidget):
         lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(14)
 
-        self._theme_toggle = ToggleSwitch(checked=(cfg().get("theme") == "dark"))
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(["OLED", "Light", "Binary", "Circuit", "Pixel"])
+        self._theme_combo.setFixedWidth(110)
 
-        theme_row = QHBoxLayout()
-        dark_lbl  = QLabel("Dark Mode")
-        dark_lbl.setObjectName("settingLabel")
-        theme_row.addWidget(self._theme_toggle)
-        theme_row.addSpacing(10)
-        theme_row.addWidget(dark_lbl)
-        theme_row.addStretch()
+        self._kill_switch_toggle  = ToggleSwitch(checked=True)
+        self._auto_connect_toggle = ToggleSwitch(checked=False)
+        self._autostart_toggle    = ToggleSwitch(checked=True)
 
         lay.addWidget(self._section("APPEARANCE"))
-        lay.addLayout(theme_row)
+        lay.addLayout(self._row("Theme", self._theme_combo))
+        lay.addSpacing(8)
+        lay.addWidget(self._section("BEHAVIOUR"))
+        lay.addLayout(self._row("Kill Switch",   self._kill_switch_toggle))
+        lay.addLayout(self._row("Auto-Connect",  self._auto_connect_toggle))
+        lay.addLayout(self._row("Start on Login", self._autostart_toggle))
+
+        note = QLabel(
+            "Kill Switch: if a privacy service drops while connected,\n"
+            "automatically disconnect all layers to prevent leaks.\n\n"
+            "Auto-Connect: connect with current layer selection\n"
+            "automatically when the application starts.\n\n"
+            "Start on Login: create an XDG autostart entry so Entropy\n"
+            "Shield launches automatically when you log in."
+        )
+        note.setObjectName("settingLabel")
+        note.setWordWrap(True)
+        note.setStyleSheet("font-size:11px; opacity:0.7;")
+        lay.addSpacing(6)
+        lay.addWidget(note)
         lay.addStretch()
         return w
 
@@ -315,9 +333,45 @@ class SettingsPanel(QWidget):
         self._onion_local_port.setValue(cfg().get("onion_server", "local_port"))
         self._onion_hs_port.setValue(cfg().get("onion_server", "hs_port"))
 
-        self._theme_toggle.setChecked(cfg().get("theme") == "dark", silent=True)
+        theme_map = {"oled": 0, "dark": 0, "light": 1, "binary": 2, "circuit": 3, "pixel": 4}
+        self._theme_combo.setCurrentIndex(theme_map.get(cfg().get("theme"), 0))
+        self._kill_switch_toggle.setChecked(cfg().get("kill_switch"),   silent=True)
+        self._auto_connect_toggle.setChecked(cfg().get("auto_connect"), silent=True)
+        self._autostart_toggle.setChecked(autostart.is_enabled(),       silent=True)
+
+    def _validate_ports(self) -> str | None:
+        """Return an error string if any ports conflict, else None."""
+        tor_trans  = self._tor_trans.value()
+        tor_dns    = self._tor_dns.value()
+        tor_socks  = self._tor_socks.value()
+        dns_port   = self._dns_port.value()
+        i2p_http   = self._i2p_http.value()
+        i2p_socks  = self._i2p_socks.value()
+        onion_port = self._onion_local_port.value()
+
+        named = {
+            "Tor TransPort":       tor_trans,
+            "Tor DNSPort":         tor_dns,
+            "Tor SOCKSPort":       tor_socks,
+            "DNSCrypt Port":       dns_port,
+            "I2P HTTP Port":       i2p_http,
+            "I2P SOCKS Port":      i2p_socks,
+            "Onion HTTP Port":     onion_port,
+        }
+
+        seen: dict[int, str] = {}
+        for name, port in named.items():
+            if port in seen:
+                return f"Port conflict: {name} and {seen[port]} both use port {port}."
+            seen[port] = name
+        return None
 
     def _on_save(self) -> None:
+        conflict = self._validate_ports()
+        if conflict:
+            QMessageBox.warning(self, "Port Conflict", conflict)
+            return
+
         cfg().set("tor", "trans_port",   self._tor_trans.value())
         cfg().set("tor", "dns_port",     self._tor_dns.value())
         cfg().set("tor", "socks_port",   self._tor_socks.value())
@@ -337,9 +391,19 @@ class SettingsPanel(QWidget):
         cfg().set("onion_server", "local_port", self._onion_local_port.value())
         cfg().set("onion_server", "hs_port",    self._onion_hs_port.value())
 
-        theme_name = "dark" if self._theme_toggle.isChecked() else "light"
+        theme_names = ["oled", "light", "binary", "circuit", "pixel"]
+        theme_name  = theme_names[self._theme_combo.currentIndex()]
         cfg().set("theme", theme_name)
+        cfg().set("kill_switch",  self._kill_switch_toggle.isChecked())
+        cfg().set("auto_connect", self._auto_connect_toggle.isChecked())
+        cfg().set("autostart",    self._autostart_toggle.isChecked())
         cfg().save()
+
+        # Apply autostart change immediately
+        if self._autostart_toggle.isChecked():
+            autostart.enable()
+        else:
+            autostart.disable()
 
         self.saved.emit()
         self.close_panel()
@@ -347,12 +411,14 @@ class SettingsPanel(QWidget):
     # ── paint ─────────────────────────────────────────────────
 
     def paintEvent(self, _e) -> None:
-        p = QPainter(self)
-        is_dark = theme()["name"] == "dark"
-        if is_dark:
-            base = QColor(4, 7, 12, 210)
+        p    = QPainter(self)
+        name = theme()["name"]
+        if name == "oled":
+            base = QColor(0, 0, 0, 220)
+        elif name == "light":
+            base = QColor(20, 20, 20, 130)
         else:
-            base = QColor(16, 24, 40, 140)
+            base = QColor(10, 10, 10, 200)
         p.fillRect(self.rect(), base)
 
     def mousePressEvent(self, e) -> None:

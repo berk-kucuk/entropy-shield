@@ -15,7 +15,8 @@ _CONFIG_PATHS = [
     "/etc/i2p/i2p.conf",
 ]
 _BAK_SUFFIX    = ".entropy-shield.bak"
-_REDSOCKS_CONF = "/tmp/entropy-shield-redsocks.conf"
+_RUN_DIR       = "/run/entropy-shield"
+_REDSOCKS_CONF = "/run/entropy-shield/redsocks.conf"
 
 # Port redsocks listens on locally; must match firewall.py's REDSOCKS_PORT
 REDSOCKS_PORT = 9070
@@ -94,6 +95,11 @@ class I2PManager:
         content = _set_section_option(content, "socksproxy", "enabled", "true")
         content = _set_section_option(content, "socksproxy", "port", str(socks_port))
 
+        max_bw = cfg().get("i2p", "max_bandwidth")
+        if max_bw > 0:
+            content = _set_section_option(content, "bandwidth", "outbound", str(max_bw))
+            content = _set_section_option(content, "bandwidth", "inbound",  str(max_bw))
+
         if use_tor:
             tor_socks = cfg().get("tor", "socks_port")
             content = _set_section_option(
@@ -103,10 +109,12 @@ class I2PManager:
         with open(self._config, "w") as f:
             f.write(content)
 
+        bw_note = f"  BW limit: {max_bw} KB/s" if max_bw > 0 else ""
         self._log(
             f"[I2P] Configured. HTTP proxy: 127.0.0.1:{http_port}  "
             f"SOCKS: 127.0.0.1:{socks_port}"
             + ("  (via Tor SOCKS)" if use_tor else "")
+            + bw_note
         )
 
     def start(self) -> None:
@@ -165,8 +173,10 @@ class I2PManager:
             "    type       = socks5;\n"
             "}\n"
         )
+        os.makedirs(_RUN_DIR, mode=0o700, exist_ok=True)
         with open(_REDSOCKS_CONF, "w") as f:
             f.write(conf)
+        os.chmod(_REDSOCKS_CONF, 0o600)
 
         self._redsocks_proc = subprocess.Popen(
             ["redsocks", "-c", _REDSOCKS_CONF],

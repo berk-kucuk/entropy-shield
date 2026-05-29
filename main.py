@@ -15,7 +15,7 @@ def _relaunch_as_root() -> None:
     for var in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
                 "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
                 "QT_QPA_PLATFORM", "HOME",
-                # KDE Plasma tray için ekstra değişkenler
+                # Extra vars needed for KDE Plasma system tray
                 "KDE_FULL_SESSION", "KDE_SESSION_VERSION",
                 "DESKTOP_SESSION", "XDG_SESSION_TYPE",
                 "XDG_CURRENT_DESKTOP", "DBUS_SYSTEM_BUS_ADDRESS"):
@@ -31,7 +31,7 @@ def _relaunch_as_root() -> None:
     try:
         os.execvp("pkexec", cmd)
     except FileNotFoundError:
-        print("pkexec not found. Run: sudo python3 main.py")
+        print("pkexec not found. Run as root: sudo python3 main.py")
         sys.exit(1)
 
 
@@ -39,8 +39,8 @@ def main() -> None:
     if os.geteuid() != 0:
         _relaunch_as_root()
 
-    # QT_QPA_PLATFORM'u sadece hiçbir display ortamı yoksa xcb'ye zorla.
-    # Wayland veya X11 zaten env'den geliyorsa dokunma — KDE tray buna bağlı.
+    # Only force QT_QPA_PLATFORM when neither Wayland nor X11 is set in env.
+    # Leaving it untouched when already set is required for KDE tray to work.
     if not os.environ.get("QT_QPA_PLATFORM"):
         if os.environ.get("WAYLAND_DISPLAY"):
             os.environ["QT_QPA_PLATFORM"] = "wayland"
@@ -48,10 +48,16 @@ def main() -> None:
             os.environ["QT_QPA_PLATFORM"] = "xcb"
 
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QFontDatabase
     from gui.main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName("Entropy Shield")
+
+    # Register pixel font for the Pixel theme
+    _font_path = os.path.join(os.path.dirname(__file__), "Fonts", "Pixeled.ttf")
+    if os.path.exists(_font_path):
+        QFontDatabase.addApplicationFont(_font_path)
 
     w = MainWindow()
     w.show()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+import time
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSizePolicy,
@@ -63,8 +64,12 @@ class ToggleSwitch(QWidget):
 
         c = theme()
         t = self._pos
-        if c["name"] == "dark":
-            off_rgb, on_rgb = (28, 36, 52),  (44, 186, 92)
+        if c["name"] == "pixel":
+            off_rgb, on_rgb = (55, 55, 55),   (200, 200, 200)
+        elif c["name"] == "oled":
+            off_rgb, on_rgb = (20, 20, 20),   (0, 210, 100)
+        elif c["name"] == "dark":
+            off_rgb, on_rgb = (28, 36, 52),   (44, 186, 92)
         else:
             off_rgb, on_rgb = (175, 184, 193), (26, 127, 55)
 
@@ -121,7 +126,7 @@ class Spinner(QWidget):
 #  StatusRing  — central animated ring
 # ──────────────────────────────────────────────────────────────
 
-_RING_COLORS = {
+_RING_FALLBACK = {
     "off":        (210, 55,  48),
     "connecting": (210, 153, 50),
     "on":         (44,  186, 92),
@@ -148,7 +153,8 @@ class StatusRing(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        r, g, b = _RING_COLORS.get(self._state, _RING_COLORS["off"])
+        glow    = theme().get("glow", _RING_FALLBACK)
+        r, g, b = glow.get(self._state, glow["off"])
         intensity = (0.5 + 0.5 * self._pulse) if self._state == "connecting" else 0.90
         cx, cy = self.width() / 2, self.height() / 2
         outer = self.width() / 2 - 4
@@ -309,18 +315,29 @@ _CARD_COLORS: dict[str, tuple[int, int, int]] = {
     "i2p":          ( 78, 210, 160),
     "onion_server": (210,  80, 180),
 }
+_CARD_COLORS_PIXEL: dict[str, tuple[int, int, int]] = {
+    "tor":          (195, 195, 195),
+    "dnscrypt":     (170, 170, 170),
+    "i2p":          (210, 210, 210),
+    "onion_server": (150, 150, 150),
+}
 
 
 class ServiceCard(QFrame):
     toggled          = pyqtSignal(str, bool)
     settings_clicked = pyqtSignal(str)
 
-    def __init__(self, tag: str, parent=None):
+    @staticmethod
+    def _resolve_accent(tag: str) -> tuple[int, int, int]:
+        if theme()["name"] == "pixel":
+            return _CARD_COLORS_PIXEL.get(tag, (180, 180, 180))
+        return _CARD_COLORS[tag]
+
+    def __init__(self, tag: str, checked: bool = True, parent=None):
         super().__init__(parent)
         self._tag = tag
         title, desc = _CARD_META[tag]
-        ar, ag, ab  = _CARD_COLORS[tag]
-        self._accent = (ar, ag, ab)
+        ar, ag, ab  = self._resolve_accent(tag)
 
         self._current_status = ""
 
@@ -333,37 +350,38 @@ class ServiceCard(QFrame):
         root.setSpacing(0)
 
         # ── icon circle (32×32) ────────────────────────────────
-        icon_frame = QWidget()
-        icon_frame.setFixedSize(32, 32)
-        icon_frame.setObjectName("cardIconFrame")
-        icon_frame.setStyleSheet(
+        self._icon_frame = QWidget()
+        self._icon_frame.setFixedSize(32, 32)
+        self._icon_frame.setObjectName("cardIconFrame")
+        self._icon_frame.setStyleSheet(
             f"background: rgba({ar},{ag},{ab},0.13);"
             f"border: 1px solid rgba({ar},{ag},{ab},0.30);"
             f"border-radius: 16px;"
         )
-        icon_inner = QVBoxLayout(icon_frame)
+        self._service_icon = _ServiceIcon(tag, ar, ag, ab)
+        icon_inner = QVBoxLayout(self._icon_frame)
         icon_inner.setContentsMargins(0, 0, 0, 0)
         icon_inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_inner.addWidget(_ServiceIcon(tag, ar, ag, ab))
+        icon_inner.addWidget(self._service_icon)
 
         # ── toggle ─────────────────────────────────────────────
-        self._toggle = ToggleSwitch(checked=True)
+        self._toggle = ToggleSwitch(checked=checked)
         self._toggle.toggled.connect(lambda v: self.toggled.emit(self._tag, v))
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(0)
-        top.addWidget(icon_frame)
+        top.addWidget(self._icon_frame)
         top.addStretch()
-        top.addSpacing(8)       # guaranteed minimum gap before toggle
+        top.addSpacing(8)
         top.addWidget(self._toggle)
 
         # ── title ──────────────────────────────────────────────
-        title_lbl = QLabel(title)
-        title_lbl.setObjectName("cardTitle")
-        title_lbl.setStyleSheet(
+        self._title_lbl = QLabel(title)
+        self._title_lbl.setObjectName("cardTitle")
+        self._title_lbl.setStyleSheet(
             f"color: rgba({ar},{ag},{ab},0.95);"
-            f"font-size:11px; font-weight:700; letter-spacing:2px;"
+            f"font-size:{'5px' if theme()['name'] == 'pixel' else '11px'}; font-weight:700; letter-spacing:2px;"
             f"background:transparent;"
         )
 
@@ -392,15 +410,32 @@ class ServiceCard(QFrame):
 
         root.addLayout(top)
         root.addSpacing(10)
-        root.addWidget(title_lbl)
+        root.addWidget(self._title_lbl)
         root.addSpacing(6)
         root.addWidget(desc_lbl)
         root.addStretch()
         root.addLayout(bot)
 
+    def refresh_theme(self) -> None:
+        ar, ag, ab = self._resolve_accent(self._tag)
+        self._icon_frame.setStyleSheet(
+            f"background: rgba({ar},{ag},{ab},0.13);"
+            f"border: 1px solid rgba({ar},{ag},{ab},0.30);"
+            f"border-radius: 16px;"
+        )
+        self._service_icon._r = ar
+        self._service_icon._g = ag
+        self._service_icon._b = ab
+        self._title_lbl.setStyleSheet(
+            f"color: rgba({ar},{ag},{ab},0.95);"
+            f"font-size:{'5px' if theme()['name'] == 'pixel' else '11px'}; font-weight:700; letter-spacing:2px;"
+            f"background:transparent;"
+        )
+        self.update()
+
     def paintEvent(self, e) -> None:
         super().paintEvent(e)
-        ar, ag, ab   = self._accent
+        ar, ag, ab   = self._resolve_accent(self._tag)
         active       = self._current_status == "active"
         connecting   = self._current_status == "connecting"
         error        = self._current_status == "error"
@@ -481,3 +516,103 @@ class ServiceCard(QFrame):
 
     def set_enabled_ui(self, enabled: bool) -> None:
         self._toggle.setEnabled(enabled)
+
+
+# ──────────────────────────────────────────────────────────────
+#  NetSpeedBar  — real-time download / upload speed
+# ──────────────────────────────────────────────────────────────
+
+class NetSpeedBar(QWidget):
+    """Reads /proc/net/dev every second and shows ↓ / ↑ speeds."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._last_rx:   int   = 0
+        self._last_tx:   int   = 0
+        self._last_time: float = 0.0
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(20)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._down_lbl = QLabel("↓ —")
+        self._down_lbl.setObjectName("speedLabel")
+        self._up_lbl   = QLabel("↑ —")
+        self._up_lbl.setObjectName("speedLabel")
+
+        lay.addWidget(self._down_lbl)
+        lay.addWidget(self._up_lbl)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(1000)
+        self.hide()
+
+    # ── public ────────────────────────────────────────────────
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self._last_rx = self._last_tx = 0
+            self._last_time = 0.0
+            self._down_lbl.setText("↓ —")
+            self._up_lbl.setText("↑ —")
+            self.show()
+        else:
+            self.hide()
+
+    # ── internals ─────────────────────────────────────────────
+
+    @staticmethod
+    def _read_bytes() -> tuple[int, int]:
+        rx = tx = 0
+        try:
+            with open("/proc/net/dev") as f:
+                for line in f:
+                    if ":" not in line:
+                        continue
+                    iface, data = line.split(":", 1)
+                    if iface.strip() == "lo":
+                        continue
+                    fields = data.split()
+                    rx += int(fields[0])
+                    tx += int(fields[8])
+        except Exception:
+            pass
+        return rx, tx
+
+    @staticmethod
+    def _fmt(bps: float) -> str:
+        if bps >= 1_048_576:
+            return f"{bps / 1_048_576:.1f} MB/s"
+        if bps >= 1_024:
+            return f"{bps / 1_024:.0f} KB/s"
+        return f"{max(0, bps):.0f} B/s"
+
+    def _tick(self) -> None:
+        rx, tx = self._read_bytes()
+        now    = time.monotonic()
+
+        if self._last_time > 0:
+            dt = now - self._last_time
+            if dt > 0 and self.isVisible():
+                c       = theme()
+                d_speed = max(0, rx - self._last_rx) / dt
+                u_speed = max(0, tx - self._last_tx) / dt
+
+                self._down_lbl.setText(f"↓  {self._fmt(d_speed)}")
+                self._up_lbl.setText(f"↑  {self._fmt(u_speed)}")
+
+                fs = "5px" if c["name"] == "pixel" else "10px"
+                self._down_lbl.setStyleSheet(
+                    f"color:{c['blue']};font-size:{fs};font-weight:700;"
+                    "background:transparent;letter-spacing:1px;"
+                )
+                self._up_lbl.setStyleSheet(
+                    f"color:{c['green']};font-size:{fs};font-weight:700;"
+                    "background:transparent;letter-spacing:1px;"
+                )
+
+        self._last_rx   = rx
+        self._last_tx   = tx
+        self._last_time = now

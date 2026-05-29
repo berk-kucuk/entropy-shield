@@ -3,6 +3,7 @@ import subprocess
 import shutil
 import re
 import os
+import time
 from typing import Callable
 
 from .config import cfg
@@ -84,6 +85,7 @@ class DNSCryptManager:
                            capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"Failed to start dnscrypt-proxy: {r.stderr.strip()}")
+        self._wait_active("dnscrypt-proxy", timeout=30)
         self._log("[DNS] dnscrypt-proxy active.")
 
     def stop(self) -> None:
@@ -224,3 +226,10 @@ class DNSCryptManager:
         r = subprocess.run(["systemctl", "is-active", name],
                            capture_output=True, text=True)
         return r.stdout.strip() == "active"
+
+    def _wait_active(self, name: str, timeout: int = 30) -> None:
+        for _ in range(timeout):
+            if self._service_active(name):
+                return
+            time.sleep(1)
+        raise RuntimeError(f"{name} did not become active within {timeout}s.")

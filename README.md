@@ -2,7 +2,7 @@
 
 <br/>
 
-<img src="logos/entropy-logo.png" alt="Entropy Shield Logo" width="120" />
+<img src="logos/oled.png" alt="Entropy Shield" width="110" />
 
 # Entropy Shield
 
@@ -17,8 +17,6 @@
 
 <br/>
 
-<img src="screenshots/connected.png" alt="Entropy Shield — Connected" width="480" />
-
 *One-click control over your entire privacy layer stack.*
 
 </div>
@@ -28,9 +26,10 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [Screenshots](#screenshots)
 - [Features](#features)
 - [Privacy Layers](#privacy-layers)
-- [Screenshots](#screenshots)
+- [Themes](#themes)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -51,6 +50,56 @@ It routes your traffic through whichever combination of layers you choose — To
 
 ---
 
+## Screenshots
+
+### OLED — Pure black, ambient glow
+
+<div align="center">
+<img src="screenshots/oled.png" alt="OLED Theme" width="520" />
+</div>
+
+<br/>
+
+### Light — Clean white panels
+
+<div align="center">
+<img src="screenshots/light.png" alt="Light Theme" width="520" />
+</div>
+
+<br/>
+
+### Binary — Hacker terminal with live binary rain
+
+<div align="center">
+<img src="screenshots/binary.png" alt="Binary Theme" width="520" />
+</div>
+
+<br/>
+
+### Circuit — PCB trace background, dark grey
+
+<div align="center">
+<img src="screenshots/circuit.png" alt="Circuit Theme" width="520" />
+</div>
+
+<br/>
+
+### Pixel — Retro pixel art, Minecraft-inspired monochrome
+
+<div align="center">
+<img src="screenshots/pixel.png" alt="Pixel Theme" width="520" />
+</div>
+
+<br/>
+
+### System Tray
+
+<div align="center">
+<img src="screenshots/tray_icon.png" alt="System Tray" width="300" />
+</div>
+
+---
+
 ## Features
 
 | | Feature |
@@ -60,10 +109,13 @@ It routes your traffic through whichever combination of layers you choose — To
 | 🛡️ | **IPv6 leak protection** — separate `table ip6` rules block IPv6 leaks under Tor; DNSCrypt redirects IPv6 DNS queries too |
 | 🧅 | **Onion Server** — publish any local directory as a Tor hidden service with a built-in HTTP file server |
 | 🦊 | **Privacy browsers** — launch isolated Firefox instances pre-configured for Tor or I2P without touching your normal profile |
-| 🌙 | **Dark & Light themes** — polished animated UI with glowing status border |
-| 🗂️ | **System tray** — minimize to tray, disconnect or quit from the notification area |
+| 🎨 | **5 themes** — OLED, Light, Binary, Circuit, Pixel; each with unique palette, animated background, and font |
+| 🗂️ | **System tray** — minimize to tray; Show/Hide, Connect/Disconnect, and Quit from the notification area |
 | ♻️ | **Zero footprint** — all config changes are backed up and reverted on disconnect |
 | ⚙️ | **Per-service settings** — configure ports, exit nodes, DNSSEC, bandwidth limits, serve directory, and more |
+| 💀 | **Kill switch** — if a privacy service drops while connected, all layers disconnect automatically |
+| 🚀 | **Auto-connect** — optionally connect with current layer selection on application startup |
+| 📶 | **Real-time speed** — live download/upload speed bar while connected |
 | 🐧 | **Multi-distro support** — one universal installer for Arch, Debian, Fedora, openSUSE, NixOS |
 | ❄️ | **NixOS native** — declarative NixOS module, no mutable config patching |
 
@@ -121,16 +173,19 @@ Both instances disable DNS prefetch, HTTPS prefetch, and media peer connections 
 
 ---
 
-## Screenshots
+## Themes
 
-<div align="center">
+Entropy Shield ships with five hand-crafted themes, each with its own color palette, background animation, font, and window aesthetic. All themes feature rounded corners and an animated glow border that shifts color with connection state.
 
-| Protected | Disconnected |
-|:---:|:---:|
-| <img src="screenshots/connected.png" width="380" /> | <img src="screenshots/disconnected.png" width="380" /> |
-| All layers active — animated green glow | Idle state — select layers and connect |
+| Theme | Style | Font | Background Effect |
+|---|---|---|---|
+| **OLED** | Pure black, white accents | Inter / SF Pro | Ambient radial blobs |
+| **Light** | White panels, dark text | Inter / SF Pro | Ambient radial blobs |
+| **Binary** | Dark black, white highlights | JetBrains Mono / Fira Code | Animated binary rain (0s and 1s) |
+| **Circuit** | Near-black with blue-grey tones | Inter / SF Pro | PCB grid with animated node glows |
+| **Pixel** | Deep black, monochrome grey scale | Pixeled (pixel-art bitmap) | Animated Minecraft-style pixel blocks |
 
-</div>
+Switch themes at any time via **Settings → General → Theme**. The entire interface — window frame, service cards, status ring, overlays, and tray icon — updates instantly.
 
 ---
 
@@ -163,7 +218,7 @@ The universal installer automatically detects your distribution and installs all
 ```bash
 git clone https://github.com/berkkucukk/entropy-shield.git
 cd entropy-shield
-bash installers/install.sh
+sudo bash install.sh
 ```
 
 The installer handles everything:
@@ -174,26 +229,27 @@ The installer handles everything:
 - Polkit policy so `pkexec` works without repeated password prompts
 - SELinux context labels on Fedora / RHEL
 - NixOS module generation + `nixos-rebuild switch`
+- Clean reinstall support: removes previous installation before copying
 
-> For an unrecognised distro, override detection: `DISTRO_ID=arch bash installers/install.sh`
+> For an unrecognised distro, override detection:
+> ```bash
+> DISTRO_ID=arch sudo bash install.sh
+> ```
 
----
+### Arch Linux — AUR (redsocks)
 
-### Distro-specific Installers
+`redsocks` is available in the AUR and provides transparent I2P proxy support. Install it with your preferred AUR helper:
 
 ```bash
-# Arch Linux / Manjaro / EndeavourOS
-paru -S entropy-shield
-yay -S entropy-shield
+paru -S redsocks
+# or
+yay -S redsocks
+```
 
-# Debian / Ubuntu / Linux Mint / Kali / Pop!_OS
-bash installers/install-debian.sh
+### Uninstall
 
-# Fedora / RHEL / AlmaLinux / Rocky Linux
-bash installers/install-fedora.sh
-
-# NixOS
-bash installers/install-nixos.sh
+```bash
+sudo bash install.sh --uninstall
 ```
 
 ---
@@ -234,7 +290,7 @@ The application requests elevated privileges via `pkexec` on first launch. After
 
 1. Toggle the service cards you want to activate (Tor, DNSCrypt, I2P, Onion Server)
 2. Click **CONNECT** — services start, firewall rules are applied, DNS is redirected
-3. The status ring turns green and the border glows to confirm protection is active
+3. The status ring turns and the border glows to confirm protection is active
 4. Optionally click **TOR BROWSER** or **I2P BROWSER** to open an isolated Firefox window
 5. Click **DISCONNECT** to stop all services and restore the original system configuration
 
@@ -245,7 +301,7 @@ The application requests elevated privileges via `pkexec` on first launch. After
 3. Enable the **ONION SERVER** card (Tor is activated automatically)
 4. Click **CONNECT** — your `.onion` address appears in the activity log once Tor bootstraps
 
-**System tray:** Closing the window minimises to the system tray. Right-click the tray icon to show the window, disconnect, or quit.
+**System tray:** Closing the window minimises to the system tray. Click the tray icon to show a menu with **Show / Hide**, **Connect / Disconnect**, and **Quit**.
 
 ---
 
@@ -258,7 +314,10 @@ Settings are stored at `~/.config/entropy-shield/config.json` and can be edited 
 
 ```json
 {
-  "theme": "dark",
+  "theme": "oled",
+  "kill_switch": true,
+  "auto_connect": false,
+  "autostart": false,
   "tor": {
     "trans_port": 9040,
     "dns_port": 5300,
@@ -319,6 +378,7 @@ Strict Nodes: ✓
 ```
 entropy-shield/
 ├── main.py                  # Entry point — privilege escalation via pkexec
+├── install.sh               # Universal distro-detecting installer
 ├── core/
 │   ├── config.py            # JSON config with deep-merge defaults
 │   ├── connection.py        # Orchestrates all layers (connect / disconnect)
@@ -328,22 +388,26 @@ entropy-shield/
 │   ├── onion_server.py      # Tor hidden service config + built-in HTTP file server
 │   ├── browser.py           # Isolated Firefox launcher (Tor / I2P profiles)
 │   ├── firewall.py          # nftables / iptables rules, IPv6 leak prevention
-│   ├── tray_helper.py       # System tray subprocess (runs as real user)
-│   └── platform.py          # NixOS detection, firewall backend selection
+│   ├── autostart.py         # XDG autostart entry management
+│   └── tray_helper.py       # System tray subprocess (runs as real user)
 ├── gui/
 │   ├── main_window.py       # Main window, animated glow border, worker thread
 │   ├── settings_panel.py    # Slide-in settings overlay
-│   ├── themes.py            # Dark / Light theme palette + QSS generation
-│   └── widgets.py           # ServiceCard, StatusRing, Spinner, ToggleSwitch
+│   ├── themes.py            # 5-theme palette + QSS generation with per-theme font scaling
+│   └── widgets.py           # ServiceCard, StatusRing, Spinner, ToggleSwitch, NetSpeedBar
 ├── logos/
-│   └── entropy-logo.png
-├── screenshots/
-└── installers/
-    ├── install.sh           # Universal distro-detecting installer
-    ├── install-arch.sh
-    ├── install-debian.sh
-    ├── install-fedora.sh
-    └── install-nixos.sh
+│   ├── oled.png             # OLED theme logo (square)
+│   ├── dark.png             # Dark variant logo
+│   ├── binary.png           # Binary theme logo
+│   ├── circuit.png          # Circuit theme logo
+│   └── pixel.png            # Pixel theme logo
+└── screenshots/
+    ├── oled.png
+    ├── light.png
+    ├── binary.png
+    ├── circuit.png
+    ├── pixel.png
+    └── tray_icon.png
 ```
 
 ### How it works
@@ -386,9 +450,9 @@ Privacy browser instances are also launched under the real user's identity (not 
 
 | Distribution | Package Manager | Notes |
 |---|---|---|
-| Arch Linux, Manjaro, EndeavourOS, Garuda | `pacman` | All packages in official repos |
-| Debian, Ubuntu, Linux Mint, Kali, Pop!\_OS, Zorin | `apt` | i2pd may require a third-party repo |
-| Fedora, RHEL, AlmaLinux, Rocky Linux | `dnf` | dnscrypt-proxy / i2pd via Copr if absent from main repo |
+| Arch Linux, Manjaro, EndeavourOS, Garuda, CachyOS | `pacman` | All packages in official repos |
+| Debian, Ubuntu, Linux Mint, Kali, Pop!\_OS, Zorin, Parrot | `apt` | i2pd may require a third-party repo |
+| Fedora, RHEL, AlmaLinux, Rocky Linux, Nobara | `dnf` | dnscrypt-proxy / i2pd via Copr if absent from main repo |
 | openSUSE Leap / Tumbleweed | `zypper` | |
 | NixOS | `nixos-rebuild` | Declarative module — no mutable config files |
 

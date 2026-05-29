@@ -136,7 +136,8 @@ class OnionServerManager:
         for _ in range(wait):
             if os.path.exists(hostname):
                 try:
-                    addr = open(hostname).read().strip()
+                    with open(hostname) as f:
+                        addr = f.read().strip()
                     if addr:
                         return addr
                 except Exception:
