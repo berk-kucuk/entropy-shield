@@ -236,7 +236,7 @@ The installer handles everything:
 > DISTRO_ID=arch sudo bash install.sh
 > ```
 
-### Arch Linux — AUR (redsocks)
+### Arch Linux — AUR
 
 `redsocks` is available in the AUR and provides transparent I2P proxy support. Install it with your preferred AUR helper:
 
