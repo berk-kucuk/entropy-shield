@@ -241,15 +241,17 @@ The installer handles everything:
 `redsocks` is available in the AUR and provides transparent I2P proxy support. Install it with your preferred AUR helper:
 
 ```bash
-paru -S redsocks
+paru -S entropy-shield
 # or
-yay -S redsocks
+yay -S entropy-shield 
 ```
 
 ### Uninstall
 
 ```bash
-sudo bash install.sh --uninstall
+paru -Rnsc entropy-shield
+# or
+yay -Rnsc entropy-shield
 ```
 
 ---
