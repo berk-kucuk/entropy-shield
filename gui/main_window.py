@@ -833,6 +833,13 @@ class MainWindow(QMainWindow):
         self._tray_proc: subprocess.Popen | None = None
         self._tray_username: str = ""
         self._quitting: bool = False
+        self._reconnect_layers: dict | None = None  # set when a layer toggle triggers reconnect
+
+        # Debounce timer: merges rapid card toggles into one reconnect
+        self._layer_change_timer = QTimer(self)
+        self._layer_change_timer.setSingleShot(True)
+        self._layer_change_timer.setInterval(400)
+        self._layer_change_timer.timeout.connect(self._apply_layer_change)
 
         self._glow_state  = "off"
         self._glow_rgb    = _glow_color("off")
@@ -989,6 +996,9 @@ class MainWindow(QMainWindow):
             row.addWidget(card)
         self._card_tor.toggled.connect(self._on_tor_toggled)
         self._card_onion.toggled.connect(self._on_onion_toggled)
+        for card in (self._card_tor, self._card_dns,
+                     self._card_i2p, self._card_onion):
+            card.toggled.connect(self._on_layer_toggled)
         return row
 
     def _build_connect_row(self) -> QWidget:
@@ -1112,6 +1122,38 @@ class MainWindow(QMainWindow):
         if checked and not self._card_tor.is_checked:
             self._card_tor._toggle.setChecked(True, silent=True)
 
+    def _on_layer_toggled(self, _tag: str, _checked: bool) -> None:
+        """Called whenever any service card is toggled. Triggers reconnect if connected."""
+        if not self._connected or self._worker is not None:
+            return
+        self._layer_change_timer.start()  # debounce: wait 400ms before acting
+
+    def _apply_layer_change(self) -> None:
+        """Reconnect with the current card selection after a layer toggle while connected."""
+        if not self._connected or self._worker is not None:
+            return
+        layers = {
+            "use_tor":          self._card_tor.is_checked,
+            "use_dnscrypt":     self._card_dns.is_checked,
+            "use_i2p":          self._card_i2p.is_checked,
+            "use_onion_server": self._card_onion.is_checked,
+        }
+        new_active = sorted(k.replace("use_", "") for k, v in layers.items() if v)
+        if new_active == sorted(self._active_layers):
+            return  # no actual change (e.g. dependency auto-toggle)
+        if not any(layers.values()):
+            self._append_log("[>] All layers disabled — disconnecting…")
+            self._start_worker("disconnect", {})
+            return
+        self._reconnect_layers = layers
+        added   = [l for l in new_active if l not in self._active_layers]
+        removed = [l for l in self._active_layers if l not in new_active]
+        parts   = []
+        if added:   parts.append("+" + ", ".join(l.upper() for l in added))
+        if removed: parts.append("−" + ", ".join(l.upper() for l in removed))
+        self._append_log(f"[>] Layer change ({', '.join(parts)}) — reconnecting…")
+        self._start_worker("disconnect", {})
+
     # ── status ────────────────────────────────────────────────
 
     def _set_status(self, state: str, title: str, sub: str) -> None:
@@ -1223,6 +1265,27 @@ class MainWindow(QMainWindow):
 
         elif success and info == "disconnect":
             self._connected = False
+            self._health_timer.stop()
+            self._status_timer.stop()
+            self._circuit_timer.stop()
+            self._connect_time  = None
+            self._exit_country  = ""
+            self._circuit_count = 0
+
+            # Layer-change reconnect: skip the "disconnected" UI and go straight
+            # back to connecting with the new layer set.
+            if self._reconnect_layers is not None:
+                layers = self._reconnect_layers
+                self._reconnect_layers = None
+                self._active_layers = [
+                    k.replace("use_", "") for k, v in layers.items() if v]
+                self._set_glow("connecting")
+                self._set_status("connecting", "RECONNECTING…", "Applying layer changes…")
+                self._connect_btn.setText("CONNECTING...")
+                self._connect_btn.setChecked(True)
+                QTimer.singleShot(200, lambda: self._start_worker("connect", layers))
+                return
+
             self._active_layers = []
             self._connect_btn.setChecked(False)
             self._connect_btn.setText("CONNECT")
@@ -1237,12 +1300,6 @@ class MainWindow(QMainWindow):
             self._new_circuit_btn.setEnabled(False)
             self._leak_test_btn.setEnabled(False)
             self._speed_bar.set_active(False)
-            self._health_timer.stop()
-            self._status_timer.stop()
-            self._circuit_timer.stop()
-            self._connect_time   = None
-            self._exit_country   = ""
-            self._circuit_count  = 0
             self._tray_send("disconnected")
 
         else:
@@ -1571,12 +1628,17 @@ class MainWindow(QMainWindow):
     # ── browsers ──────────────────────────────────────────────
 
     def _on_open_tor_browser(self) -> None:
+        self._tor_browser_btn.setEnabled(False)
         try:
             browser.launch_tor(cfg().get("tor", "socks_port"), self._append_log)
         except Exception as exc:
             self._append_log(f"[BROWSER] {exc}")
+        finally:
+            QTimer.singleShot(3000, lambda: self._tor_browser_btn.setEnabled(
+                self._connected and "tor" in self._active_layers))
 
     def _on_open_i2p_browser(self) -> None:
+        self._i2p_browser_btn.setEnabled(False)
         try:
             browser.launch_i2p(
                 cfg().get("i2p", "http_port"),
@@ -1585,6 +1647,9 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             self._append_log(f"[BROWSER] {exc}")
+        finally:
+            QTimer.singleShot(3000, lambda: self._i2p_browser_btn.setEnabled(
+                self._connected and "i2p" in self._active_layers))
 
     # ── helpers ───────────────────────────────────────────────
 

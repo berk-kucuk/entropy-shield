@@ -152,26 +152,27 @@ def _prepare_firefox_profile(profile_dir: str, user_js: str,
 
 def _spawn_as_user(cmd: list[str], pw: pwd.struct_passwd,
                    env: dict[str, str]) -> None:
-    launched = False
+    # GUI runs as a normal user — launch directly without privilege switching.
+    if os.getuid() == pw.pw_uid:
+        subprocess.Popen(cmd, env=env,
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        return
+    # Running as root (legacy path) — switch to the real user first.
     for prefix in (
         ["runuser", "-u", pw.pw_name, "--"],
         ["su", "-s", "/bin/sh", pw.pw_name, "-c",
          " ".join(f'"{a}"' if " " in a else a for a in cmd)],
     ):
         try:
-            if prefix[0] in ("runuser",):
-                full = prefix + cmd
-            else:
-                full = prefix  # su variant already embeds cmd
+            full = prefix + cmd if prefix[0] == "runuser" else prefix
             subprocess.Popen(full, env=env,
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
-            launched = True
-            break
+            return
         except FileNotFoundError:
             continue
-    if not launched:
-        raise RuntimeError("runuser/su not found — cannot launch browser as user.")
+    raise RuntimeError("runuser/su not found — cannot launch browser as user.")
 
 
 # ── public API ────────────────────────────────────────────────

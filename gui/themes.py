@@ -54,8 +54,8 @@ OLED: dict = {
     "border_active": "rgba(230,230,230,0.80)",
     "border_error":  "rgba(210,40,40,0.80)",
     "text":          "#f2f2f2",
-    "text_muted":    "#666666",
-    "text_dim":      "#303030",
+    "text_muted":    "#888888",
+    "text_dim":      "#555555",
     "green":         "#e8e8e8",
     "blue":          "#aaaaaa",
     "yellow":        "#c8c8c8",
@@ -122,8 +122,8 @@ BINARY: dict = {
     "border_active": "rgba(215,215,215,0.82)",
     "border_error":  "rgba(200,40,40,0.82)",
     "text":          "#e5e5e5",
-    "text_muted":    "#808080",
-    "text_dim":      "#363636",
+    "text_muted":    "#909090",
+    "text_dim":      "#565656",
     "green":         "#e5e5e5",
     "blue":          "#a0a0a0",
     "yellow":        "#c0c0c0",
@@ -156,8 +156,8 @@ CIRCUIT: dict = {
     "border_active": "rgba(210,210,220,0.80)",
     "border_error":  "rgba(195,45,45,0.80)",
     "text":          "#d8d8e0",
-    "text_muted":    "#606068",
-    "text_dim":      "#2c2c36",
+    "text_muted":    "#888890",
+    "text_dim":      "#525260",
     "green":         "#d0d0d8",
     "blue":          "#9090a0",
     "yellow":        "#b0b0b8",
@@ -190,8 +190,8 @@ PIXEL: dict = {
     "border_active": "rgba(235,235,235,0.88)",
     "border_error":  "rgba(200,40,55,0.90)",
     "text":          "#e8e8e8",
-    "text_muted":    "#888888",
-    "text_dim":      "#484848",
+    "text_muted":    "#999999",
+    "text_dim":      "#606060",
     "green":         "#e8e8e8",
     "blue":          "#bebebe",
     "yellow":        "#d0d0d0",
@@ -374,7 +374,7 @@ QLabel#statusTitle {{
 }}
 QLabel#statusSub {{
     font-size: {pf(9)};
-    color: {c['text_dim']};
+    color: {c['text_muted']};
     background: transparent;
     letter-spacing: 3px;
 }}
@@ -400,7 +400,7 @@ QLabel#cardTitle {{
     font-size: {pf(10)}; font-weight: 800;
     letter-spacing: 2px; background: transparent;
 }}
-QLabel#cardDesc  {{ font-size: {pf(9)}; color: {c['text_dim']}; background: transparent; }}
+QLabel#cardDesc  {{ font-size: {pf(9)}; color: {c['text_muted']}; background: transparent; }}
 QLabel#cardDot   {{ font-size: {pf(7)}; color: {c['text_dim']}; background: transparent; }}
 QLabel#cardDot[state="active"]     {{ color: {c['green']};  }}
 QLabel#cardDot[state="connecting"] {{ color: {c['yellow']}; }}
