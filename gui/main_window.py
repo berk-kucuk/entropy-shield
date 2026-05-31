@@ -2,9 +2,10 @@ from __future__ import annotations
 import sys
 import os
 import math
-import pwd
+import json
 import random as _random
 import select
+import shutil
 import subprocess
 import datetime
 from pathlib import Path
@@ -27,10 +28,35 @@ import gui.themes as themes
 from gui.themes import current as theme, build_qss
 from gui.widgets import ServiceCard, Spinner, StatusRing, NetSpeedBar
 from gui.settings_panel import SettingsPanel
-from core.connection import ConnectionManager
 from core.config import cfg
+from core.updater import VERSION
 import core.browser as browser
 import core.autostart as autostart
+
+_RUNNER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "core", "privileged_runner.py",
+)
+_SUDOERS_FILE = "/etc/sudoers.d/entropy-shield"
+
+
+def _runner_cmd() -> list[str]:
+    """Return command to launch the privileged runner (best available method)."""
+    # Prefer passwordless sudo when the sudoers entry exists
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "-l", sys.executable, _RUNNER_PATH],
+            capture_output=True, timeout=2,
+        )
+        if r.returncode == 0:
+            return ["sudo", "-n", sys.executable, _RUNNER_PATH]
+    except Exception:
+        pass
+    # Fall back to pkexec (shows polkit auth dialog)
+    if shutil.which("pkexec"):
+        return ["pkexec", sys.executable, _RUNNER_PATH]
+    # Last resort: sudo with terminal prompt
+    return ["sudo", sys.executable, _RUNNER_PATH]
 
 _LOGOS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logos"
@@ -105,7 +131,7 @@ _GLOW_FALLBACK = {
     "error":      (210, 55,  48),
 }
 _SERVICE_MAP = {
-    "tor":      "tor",
+    # Tor is a managed subprocess — checked separately via TorManager.is_running().
     "dnscrypt": "dnscrypt-proxy",
     "i2p":      "i2pd",
 }
@@ -129,33 +155,242 @@ class _Worker(QThread):
     log  = pyqtSignal(str)
     done = pyqtSignal(bool, str)
 
-    def __init__(self, action: str, mgr: "ConnectionManager", layers: dict):
+    def __init__(self, action: str, layers: dict,
+                 runner_proc: "subprocess.Popen | None" = None):
         super().__init__()
-        self._action = action
-        self._mgr    = mgr
-        self._layers = layers
+        self._action      = action
+        self._layers      = layers
+        self._runner      = runner_proc
+        self.new_runner: "subprocess.Popen | None" = None  # set on connect success
 
     def run(self) -> None:
-        emit = self.log.emit
-        self._mgr._log        = emit
-        self._mgr._tor._log   = emit
-        self._mgr._dns._log   = emit
-        self._mgr._i2p._log   = emit
-        self._mgr._onion._log = emit
-        self._mgr._fw._log    = emit
         try:
             if self._action == "connect":
-                self._mgr.connect(**self._layers)
+                self._do_connect()
             else:
-                self._mgr.disconnect()
+                self._do_disconnect()
             self.done.emit(True, self._action)
         except Exception as exc:
-            if self._action == "connect":
-                try:
-                    self._mgr.disconnect()
-                except Exception:
-                    pass
             self.done.emit(False, str(exc))
+
+    # ── connect ───────────────────────────────────────────────
+
+    def _do_connect(self) -> None:
+        proc = subprocess.Popen(
+            _runner_cmd(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait for runner to confirm root was obtained (polkit dialog may take time)
+        while True:
+            raw = proc.stdout.readline()
+            if not raw:
+                code = proc.wait()
+                if code == 126:
+                    raise RuntimeError(
+                        "Authentication cancelled.")
+                raise RuntimeError(
+                    f"Privileged process failed to start (exit code: {code}).")
+            line = raw.decode(errors="replace").rstrip()
+            if line == "[RUNNER] started":
+                break
+            if "[ERR]" in line:
+                proc.wait()
+                raise RuntimeError(line)
+
+        self.new_runner = proc
+
+        # Send connect command
+        proc.stdin.write(f"connect {json.dumps(self._layers)}\n".encode())
+        proc.stdin.flush()
+
+        # Read log lines until connected
+        while True:
+            raw = proc.stdout.readline()
+            if not raw:
+                raise RuntimeError(
+                    "Privileged process terminated unexpectedly during connection.")
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                self.log.emit(line)
+            if "[OK] All selected layers are active." in line:
+                return
+            if "[ERR]" in line:
+                # Runner stays alive; GUI will show error and leave runner running
+                # so a future disconnect can clean up properly.
+                raise RuntimeError(line)
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    "Privileged process terminated unexpectedly during connection.")
+
+    # ── disconnect ────────────────────────────────────────────
+
+    def _do_disconnect(self) -> None:
+        proc = self._runner
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write(b"disconnect\n")
+            proc.stdin.flush()
+        except BrokenPipeError:
+            return
+        while True:
+            raw = proc.stdout.readline()
+            if not raw:
+                break
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                self.log.emit(line)
+            if "[OK] All layers disconnected." in line:
+                break
+            if proc.poll() is not None:
+                break
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+# ── Panic worker ─────────────────────────────────────────────
+
+class _PanicWorker(QThread):
+    done = pyqtSignal(str)
+
+    def __init__(self, runner_proc: "subprocess.Popen | None"):
+        super().__init__()
+        self._runner = runner_proc
+
+    def run(self) -> None:
+        from core.panic import user_space_panic
+        msgs: list[str] = []
+        user_space_panic(log_fn=msgs.append)
+
+        if self._runner and self._runner.poll() is None:
+            try:
+                self._runner.stdin.write(b"panic\n")
+                self._runner.stdin.flush()
+                while True:
+                    raw = self._runner.stdout.readline()
+                    if not raw:
+                        break
+                    line = raw.decode(errors="replace").rstrip()
+                    if line:
+                        msgs.append(line)
+                    if "[PANIC] Connection closed." in line:
+                        break
+                    if self._runner.poll() is not None:
+                        break
+            except Exception as exc:
+                msgs.append(f"[PANIC] Error: {exc}")
+        else:
+            # Runner not running — clean up firewall directly (nft is fast)
+            subprocess.run(["nft", "delete", "table", "ip",  "entropy-shield"],
+                           capture_output=True)
+            subprocess.run(["nft", "delete", "table", "ip6", "entropy-shield"],
+                           capture_output=True)
+
+        self.done.emit("\n".join(msgs))
+
+
+# ── Circuit info worker ───────────────────────────────────────
+
+class _CircuitInfoWorker(QThread):
+    result = pyqtSignal(dict)
+
+    def __init__(self, runner_proc: "subprocess.Popen"):
+        super().__init__()
+        self._runner = runner_proc
+
+    def run(self) -> None:
+        import json as _json
+        try:
+            if self._runner.poll() is not None:
+                self.result.emit({})
+                return
+            self._runner.stdin.write(b"circuit_info\n")
+            self._runner.stdin.flush()
+            raw = self._runner.stdout.readline()
+            if raw:
+                line = raw.decode(errors="replace").rstrip()
+                if line.startswith("[CIRCUIT] "):
+                    try:
+                        self.result.emit(_json.loads(line[10:]))
+                        return
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        self.result.emit({})
+
+
+# ── Leak test worker ──────────────────────────────────────────
+
+class _LeakTestWorker(QThread):
+    progress = pyqtSignal(str)
+    done     = pyqtSignal(list)
+
+    def __init__(self, socks_port: int, dns_port: int):
+        super().__init__()
+        self._socks = socks_port
+        self._dns   = dns_port
+
+    def run(self) -> None:
+        from core.leak_test import LeakTester
+        tester  = LeakTester(self._socks, self._dns)
+        results = []
+        tests = [
+            tester.test_tor_exit,
+            tester.test_dns_leak,
+            tester.test_ipv6_leak,
+            tester.test_webrtc_udp,
+            tester.test_timezone,
+            tester.test_hostname,
+        ]
+        for fn in tests:
+            self.progress.emit(f"[LEAK TEST] Running: {fn.__name__.replace('test_', '').upper()}…")
+            r = fn()
+            results.append(r)
+        self.done.emit(results)
+
+
+# ── Update check worker ───────────────────────────────────────
+
+class _UpdateCheckWorker(QThread):
+    result = pyqtSignal(bool, str)
+
+    def run(self) -> None:
+        from core.updater import check_for_update
+        try:
+            available, latest = check_for_update()
+            self.result.emit(available, latest)
+        except Exception:
+            self.result.emit(False, "")
+
+
+# ── New circuit worker ────────────────────────────────────────
+
+class _NewCircuitWorker(QThread):
+    result = pyqtSignal(str)
+
+    def __init__(self, runner_proc: "subprocess.Popen"):
+        super().__init__()
+        self._runner = runner_proc
+
+    def run(self) -> None:
+        try:
+            if self._runner is None or self._runner.poll() is not None:
+                raise RuntimeError("Privileged process is not running.")
+            self._runner.stdin.write(b"new_circuit\n")
+            self._runner.stdin.flush()
+            raw = self._runner.stdout.readline()
+            self.result.emit(
+                raw.decode(errors="replace").rstrip() if raw
+                else "[TOR] No response from circuit."
+            )
+        except Exception as e:
+            self.result.emit(f"[TOR] Circuit renewal failed: {e}")
 
 
 # ── IP check worker ───────────────────────────────────────────
@@ -419,6 +654,15 @@ class _TitleBar(QWidget):
         lay.addWidget(title)
         lay.addStretch()
 
+        # ☢ Panic (emergency disconnect)
+        btn_panic = QPushButton("☢")
+        btn_panic.setObjectName("panicBtn")
+        btn_panic.setFixedSize(26, 26)
+        btn_panic.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_panic.setToolTip("PANIC: Emergency disconnect — kills all connections immediately")
+        btn_panic.clicked.connect(win._on_panic)
+        lay.addWidget(btn_panic)
+
         # ⎯  Minimize
         btn_min = QPushButton("⎯")
         btn_min.setObjectName("minBtn")
@@ -515,10 +759,21 @@ class MainWindow(QMainWindow):
         self.resize(560, 740)
 
         self._connected      = False
-        self._worker: _Worker | None = None
-        self._ip_worker: _IpCheckWorker | None = None
-        self._mgr            = ConnectionManager(lambda _: None)
-        self._active_layers: list[str] = []
+        self._worker:          _Worker | None            = None
+        self._ip_worker:       _IpCheckWorker | None     = None
+        self._nc_worker:       _NewCircuitWorker | None  = None
+        self._panic_worker:    _PanicWorker | None       = None
+        self._leak_worker:     _LeakTestWorker | None    = None
+        self._update_worker:   _UpdateCheckWorker | None = None
+        self._circuit_worker:  _CircuitInfoWorker | None = None
+        self._runner_proc:     subprocess.Popen | None   = None
+        self._active_layers:   list[str]                 = []
+
+        # Connection metadata for richer status display
+        self._connect_time:    datetime.datetime | None  = None
+        self._exit_country:    str                       = ""
+        self._circuit_count:   int                       = 0
+        self._reconnect_attempts: int                    = 0
         self._tray_proc: subprocess.Popen | None = None
         self._tray_username: str = ""
         self._quitting: bool = False
@@ -534,6 +789,22 @@ class MainWindow(QMainWindow):
         self._health_timer.setInterval(10_000)
         self._health_timer.timeout.connect(self._check_service_health)
 
+        # Reconnect countdown timer (fires every second when reconnecting)
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setInterval(1_000)
+        self._reconnect_timer.timeout.connect(self._reconnect_tick)
+        self._reconnect_countdown: int = 0
+
+        # Status subtitle update timer (connection duration + circuit info)
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(5_000)
+        self._status_timer.timeout.connect(self._refresh_status_sub)
+
+        # Circuit info refresh (every 30s when connected via Tor)
+        self._circuit_timer = QTimer(self)
+        self._circuit_timer.setInterval(30_000)
+        self._circuit_timer.timeout.connect(self._refresh_circuit_info)
+
         self._apply_theme()
         self._build_ui()
 
@@ -541,7 +812,10 @@ class MainWindow(QMainWindow):
         self._settings.saved.connect(self._on_settings_saved)
 
         self._build_tray()
-        self._append_log("[>] Entropy Shield ready.")
+        self._append_log(f"[>] Entropy Shield v{VERSION} ready.")
+
+        # Kick off update check after a short delay so UI is fully ready
+        QTimer.singleShot(3000, self._run_update_check)
 
         if cfg().get("autostart"):
             if autostart.enable():
@@ -724,13 +998,34 @@ class MainWindow(QMainWindow):
         self._ip_check_btn.setToolTip("Check IP via Tor SOCKS (requires curl).")
         self._ip_check_btn.clicked.connect(self._on_ip_check)
 
+        self._new_circuit_btn = QPushButton("NEW CIRCUIT")
+        self._new_circuit_btn.setObjectName("toolBtn")
+        self._new_circuit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._new_circuit_btn.setEnabled(False)
+        self._new_circuit_btn.setToolTip(
+            "Request a new Tor circuit (SIGNAL NEWNYM).\n"
+            "Changes your exit node and clears stream associations.")
+        self._new_circuit_btn.clicked.connect(self._on_new_circuit)
+
         exp_btn = QPushButton("⬇ EXPORT")
         exp_btn.setObjectName("toolBtn")
         exp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         exp_btn.setToolTip("Save activity log to file.")
         exp_btn.clicked.connect(self._export_log)
 
+        self._leak_test_btn = QPushButton("LEAK TEST")
+        self._leak_test_btn.setObjectName("toolBtn")
+        self._leak_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._leak_test_btn.setEnabled(False)
+        self._leak_test_btn.setToolTip(
+            "Run DNS, IPv6, WebRTC, timezone and hostname leak tests.")
+        self._leak_test_btn.clicked.connect(self._on_leak_test)
+
         hdr.addWidget(self._ip_check_btn)
+        hdr.addSpacing(4)
+        hdr.addWidget(self._new_circuit_btn)
+        hdr.addSpacing(4)
+        hdr.addWidget(self._leak_test_btn)
         hdr.addSpacing(4)
         hdr.addWidget(exp_btn)
 
@@ -814,7 +1109,8 @@ class MainWindow(QMainWindow):
             for card in self._active_cards():
                 card.set_status("connecting")
 
-        self._worker = _Worker(action, self._mgr, layers)
+        runner = self._runner_proc if action == "disconnect" else None
+        self._worker = _Worker(action, layers, runner)
         self._worker.log.connect(self._append_log)
         self._worker.done.connect(self._on_worker_done)
         self._worker.start()
@@ -824,6 +1120,14 @@ class MainWindow(QMainWindow):
         self._connect_btn.setEnabled(True)
         self._set_cards_enabled(True)
         w, self._worker = self._worker, None
+
+        # Capture runner reference BEFORE deleteLater
+        if success and info == "connect" and w is not None:
+            self._runner_proc = getattr(w, "new_runner", None)
+        elif info in ("disconnect",) or not success:
+            if info == "disconnect" or not success:
+                self._runner_proc = None
+
         if w is not None:
             w.deleteLater()
 
@@ -845,10 +1149,21 @@ class MainWindow(QMainWindow):
             self._tor_browser_btn.setEnabled(tor_on)
             self._i2p_browser_btn.setEnabled("i2p" in self._active_layers)
             self._ip_check_btn.setEnabled(tor_on)
+            self._new_circuit_btn.setEnabled(tor_on)
+            self._leak_test_btn.setEnabled(True)
             self._speed_bar.set_active(True)
             self._tray_send("connected")
+            self._connect_time    = datetime.datetime.now()
+            self._reconnect_attempts = 0
+            self._exit_country    = ""
+            self._circuit_count   = 0
             if cfg().get("kill_switch"):
                 self._health_timer.start()
+            self._status_timer.start()
+            if tor_on:
+                self._circuit_timer.start()
+                # Kick off first circuit info fetch
+                QTimer.singleShot(3000, self._refresh_circuit_info)
 
         elif success and info == "disconnect":
             self._connected = False
@@ -863,8 +1178,15 @@ class MainWindow(QMainWindow):
             self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
+            self._new_circuit_btn.setEnabled(False)
+            self._leak_test_btn.setEnabled(False)
             self._speed_bar.set_active(False)
             self._health_timer.stop()
+            self._status_timer.stop()
+            self._circuit_timer.stop()
+            self._connect_time   = None
+            self._exit_country   = ""
+            self._circuit_count  = 0
             self._tray_send("disconnected")
 
         else:
@@ -881,8 +1203,15 @@ class MainWindow(QMainWindow):
             self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
+            self._new_circuit_btn.setEnabled(False)
+            self._leak_test_btn.setEnabled(False)
             self._speed_bar.set_active(False)
             self._health_timer.stop()
+            self._status_timer.stop()
+            self._circuit_timer.stop()
+            self._connect_time   = None
+            self._exit_country   = ""
+            self._circuit_count  = 0
             self._tray_send("disconnected")
             self._append_log(f"[ERR] {info}")
 
@@ -891,6 +1220,32 @@ class MainWindow(QMainWindow):
     def _check_service_health(self) -> None:
         if not self._connected or self._worker is not None:
             return
+
+        # Check privileged runner process liveness (covers Tor subprocess too).
+        if self._runner_proc is not None and self._runner_proc.poll() is not None:
+            self._append_log(
+                "[!] KILL SWITCH: Privileged runner exited unexpectedly. "
+                "Firewall rules may still be active — reconnect or reboot to clear.")
+            self._health_timer.stop()
+            self._runner_proc = None
+            self._connected = False
+            self._active_layers = []
+            self._connect_btn.setChecked(False)
+            self._connect_btn.setText("CONNECT")
+            self._set_glow("error")
+            self._set_status("error", "ERROR", "Runner died — reconnect to restore")
+            for card in (self._card_tor, self._card_dns,
+                         self._card_i2p, self._card_onion):
+                card.set_status("")
+            self._tor_browser_btn.setEnabled(False)
+            self._i2p_browser_btn.setEnabled(False)
+            self._ip_check_btn.setEnabled(False)
+            self._new_circuit_btn.setEnabled(False)
+            self._speed_bar.set_active(False)
+            self._tray_send("disconnected")
+            return
+
+        # Check systemd services (no root needed for is-active).
         for layer, service in _SERVICE_MAP.items():
             if layer not in self._active_layers:
                 continue
@@ -904,7 +1259,46 @@ class MainWindow(QMainWindow):
                     "emergency disconnect triggered.")
                 self._health_timer.stop()
                 self._start_worker("disconnect", {})
+                self._maybe_schedule_reconnect()
                 return
+
+    def _maybe_schedule_reconnect(self) -> None:
+        """Schedule auto-reconnect if the feature is enabled."""
+        ar = cfg().get("auto_reconnect")
+        if not ar.get("enabled", True):
+            return
+        max_attempts = ar.get("max_attempts", 3)
+        if self._reconnect_attempts >= max_attempts:
+            self._append_log(
+                f"[!] Auto-reconnect: max attempts ({max_attempts}) reached. "
+                "Reconnect manually.")
+            return
+        delay = ar.get("delay_seconds", 15)
+        self._reconnect_countdown = delay
+        self._reconnect_attempts += 1
+        self._append_log(
+            f"[>] Auto-reconnect in {delay}s "
+            f"(attempt {self._reconnect_attempts}/{max_attempts})…")
+        self._reconnect_timer.start()
+
+    def _reconnect_tick(self) -> None:
+        self._reconnect_countdown -= 1
+        if self._reconnect_countdown <= 0:
+            # If disconnect worker is still running, wait a couple more seconds
+            # before attempting reconnect so we start from a clean state.
+            if self._worker is not None:
+                self._reconnect_countdown = 2
+                return
+            self._reconnect_timer.stop()
+            if not self._connected:
+                self._append_log("[>] Auto-reconnect: connecting…")
+                self._auto_connect()
+        else:
+            self._set_status(
+                "connecting",
+                "AUTO-RECONNECT",
+                f"Reconnecting in {self._reconnect_countdown}s…",
+            )
 
     # ── auto-connect ──────────────────────────────────────────
 
@@ -938,6 +1332,172 @@ class MainWindow(QMainWindow):
         self._append_log(msg)
         if self._connected and "tor" in self._active_layers:
             self._ip_check_btn.setEnabled(True)
+
+    # ── richer status ─────────────────────────────────────────
+
+    def _refresh_status_sub(self) -> None:
+        """Update status subtitle with duration, exit country, circuit count."""
+        if not self._connected or not self._connect_time:
+            return
+        elapsed = datetime.datetime.now() - self._connect_time
+        h, rem  = divmod(int(elapsed.total_seconds()), 3600)
+        m, s    = divmod(rem, 60)
+        dur     = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+        parts = []
+        for l in self._active_layers:
+            parts.append(l.upper().replace("_", " "))
+
+        info_parts = []
+        if "tor" in self._active_layers:
+            if self._exit_country:
+                info_parts.append(f"EXIT: {self._exit_country}")
+            if self._circuit_count:
+                info_parts.append(f"{self._circuit_count} circuits")
+        if info_parts:
+            parts.extend(info_parts)
+        parts.append(dur)
+
+        self._status_sub.setText("  ·  ".join(parts))
+
+    def _refresh_circuit_info(self) -> None:
+        # Skip if any worker is active — avoids stdout race during connect/disconnect.
+        if not self._connected or not self._runner_proc or self._worker is not None:
+            return
+        if self._circuit_worker and self._circuit_worker.isRunning():
+            return
+        self._circuit_worker = _CircuitInfoWorker(self._runner_proc)
+        self._circuit_worker.result.connect(self._on_circuit_info)
+        self._circuit_worker.start()
+
+    def _on_circuit_info(self, info: dict) -> None:
+        if not info:
+            return
+        self._circuit_count = info.get("circuit_count", 0)
+        cc = info.get("exit_country", "")
+        if cc and cc != self._exit_country:
+            self._exit_country = cc
+            if self._connected:
+                self._append_log(f"[TOR] Exit country: {cc}")
+        self._refresh_status_sub()
+
+    # ── panic ─────────────────────────────────────────────────
+
+    def _on_panic(self) -> None:
+        if self._panic_worker and self._panic_worker.isRunning():
+            return
+        self._append_log("[PANIC] Emergency disconnect triggered!")
+        self._set_glow("error")
+        self._set_status("error", "PANIC", "Emergency disconnect…")
+        self._panic_worker = _PanicWorker(self._runner_proc)
+        self._panic_worker.done.connect(self._on_panic_done)
+        self._panic_worker.start()
+
+    def _on_panic_done(self, msg: str) -> None:
+        for line in msg.splitlines():
+            if line.strip():
+                self._append_log(line)
+        # Stop any running workers / UI elements
+        self._spinner.stop()
+        self._set_cards_enabled(True)
+        if self._worker is not None:
+            try:
+                self._worker.terminate()
+            except Exception:
+                pass
+            self._worker = None
+        # Reset all state
+        self._connected      = False
+        self._active_layers  = []
+        self._runner_proc    = None
+        self._connect_time   = None
+        self._exit_country   = ""
+        self._circuit_count  = 0
+        self._connect_btn.setChecked(False)
+        self._connect_btn.setText("CONNECT")
+        self._connect_btn.setEnabled(True)
+        self._set_glow("off")
+        self._set_status("off", "DISCONNECTED", "Select layers and connect")
+        for card in (self._card_tor, self._card_dns,
+                     self._card_i2p, self._card_onion):
+            card.set_status("")
+        self._tor_browser_btn.setEnabled(False)
+        self._i2p_browser_btn.setEnabled(False)
+        self._ip_check_btn.setEnabled(False)
+        self._new_circuit_btn.setEnabled(False)
+        self._leak_test_btn.setEnabled(False)
+        self._speed_bar.set_active(False)
+        self._health_timer.stop()
+        self._status_timer.stop()
+        self._circuit_timer.stop()
+        self._reconnect_timer.stop()
+        self._tray_send("disconnected")
+        self._append_log("[PANIC] Emergency cleanup complete.")
+
+    # ── leak test ─────────────────────────────────────────────
+
+    def _on_leak_test(self) -> None:
+        if self._leak_worker and self._leak_worker.isRunning():
+            return
+        self._leak_test_btn.setEnabled(False)
+        self._append_log("[LEAK TEST] Starting tests…")
+        socks = cfg().get("tor", "socks_port") if "tor" in self._active_layers else 9050
+        dns   = cfg().get("tor", "dns_port")   if "tor" in self._active_layers else 5300
+        self._leak_worker = _LeakTestWorker(socks, dns)
+        self._leak_worker.progress.connect(self._append_log)
+        self._leak_worker.done.connect(self._on_leak_done)
+        self._leak_worker.start()
+
+    def _on_leak_done(self, results: list) -> None:
+        passed = sum(1 for r in results if r.passed)
+        total  = len(results)
+        self._append_log(f"[LEAK TEST] ── Results: {passed}/{total} passed ──")
+        for r in results:
+            icon = "✓" if r.passed else "✗"
+            self._append_log(f"[LEAK TEST]  {icon}  {r.name}: {r.message}")
+            if r.detail:
+                self._append_log(f"[LEAK TEST]      {r.detail}")
+        if passed == total:
+            self._append_log("[LEAK TEST] All tests passed — no leaks detected.")
+        else:
+            self._append_log(f"[LEAK TEST] WARNING: {total - passed} test(s) failed!")
+        if self._connected:
+            self._leak_test_btn.setEnabled(True)
+
+    # ── update check ──────────────────────────────────────────
+
+    def _run_update_check(self) -> None:
+        if not cfg().get("update_check"):
+            return
+        self._update_worker = _UpdateCheckWorker()
+        self._update_worker.result.connect(self._on_update_result)
+        self._update_worker.start()
+
+    def _on_update_result(self, available: bool, latest: str) -> None:
+        if available:
+            self._append_log(
+                f"[UPDATE] New version available: v{latest}  "
+                "(github.com/berk-kucuk/entropy-shield)"
+            )
+
+    # ── new circuit ───────────────────────────────────────────
+
+    def _on_new_circuit(self) -> None:
+        if self._nc_worker and self._nc_worker.isRunning():
+            return
+        if not self._runner_proc or self._runner_proc.poll() is not None:
+            self._append_log("[!] Privileged process is not running — cannot renew circuit.")
+            return
+        self._new_circuit_btn.setEnabled(False)
+        self._append_log("[TOR] Requesting new circuit…")
+        self._nc_worker = _NewCircuitWorker(self._runner_proc)
+        self._nc_worker.result.connect(self._on_nc_result)
+        self._nc_worker.start()
+
+    def _on_nc_result(self, msg: str) -> None:
+        self._append_log(msg)
+        if self._connected and "tor" in self._active_layers:
+            self._new_circuit_btn.setEnabled(True)
 
     # ── log export ────────────────────────────────────────────
 
@@ -1093,51 +1653,19 @@ class MainWindow(QMainWindow):
         return env
 
     def _build_tray(self) -> None:
-        uid = self._original_uid()
-        if uid is None:
-            self._append_log("[!] Tray disabled: could not determine real user UID.")
-            return
-        try:
-            pw = pwd.getpwuid(uid)
-        except KeyError:
-            self._append_log(f"[!] Tray disabled: UID {uid} not found.")
-            return
-
-        username = pw.pw_name
-        env      = self._user_env(uid, username, pw.pw_dir)
-        self._append_log(
-            f"[>] Tray env: DBUS={env.get('DBUS_SESSION_BUS_ADDRESS','?')[:40]} "
-            f"DISPLAY={env.get('DISPLAY','?')} "
-            f"WAYLAND={env.get('WAYLAND_DISPLAY','?')}"
-        )
-
         tray_logo = _logo_for_theme(cfg().get("theme"))
-        launched = False
-        for cmd in (
-            ["runuser", "-u", username, "--",
-             sys.executable, _TRAY_HELPER, tray_logo],
-            ["su", "-s", "/bin/sh", username, "-c",
-             f"{sys.executable} {_TRAY_HELPER} {tray_logo}"],
-        ):
-            try:
-                self._tray_proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, env=env,
-                )
-                launched = True
-                break
-            except FileNotFoundError:
-                continue
-            except Exception as exc:
-                self._append_log(f"[!] Tray launch failed: {exc}")
-                return
-
-        if not launched:
-            self._append_log("[!] runuser/su not found — tray disabled.")
+        try:
+            self._tray_proc = subprocess.Popen(
+                [sys.executable, _TRAY_HELPER, tray_logo],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except Exception as exc:
+            self._append_log(f"[!] Tray launch failed: {exc}")
             return
 
-        self._tray_username = username
+        self._tray_username = os.environ.get("USER", "")
         self._tray_poll = QTimer(self)
         self._tray_poll.timeout.connect(self._poll_tray)
         self._tray_poll.start(100)
@@ -1167,6 +1695,10 @@ class MainWindow(QMainWindow):
                 pass
             self._tray_proc = None
             self._tray_poll.stop()
+            # If we were in the middle of quitting, finish it.
+            if self._quitting:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.quit()
             return
 
         ready, _, _ = select.select([self._tray_proc.stdout], [], [], 0)
@@ -1181,6 +1713,7 @@ class MainWindow(QMainWindow):
         if   line == "show":       self._tray_show()
         elif line == "connect":    self._tray_connect()
         elif line == "disconnect": self._tray_disconnect()
+        elif line == "panic":      self._on_panic()
         elif line == "quit":       self._tray_quit()
 
     def _tray_send(self, cmd: str) -> None:
@@ -1195,9 +1728,14 @@ class MainWindow(QMainWindow):
         self._tray_send("ack_quit")
         if self._tray_proc:
             try:
-                self._tray_proc.wait(timeout=3)
+                self._tray_proc.wait(timeout=2)
             except Exception:
-                self._tray_proc.kill()
+                # Timed out or already dead — kill to be sure.
+                try:
+                    self._tray_proc.kill()
+                except Exception:
+                    pass
+            self._tray_proc = None
         from PyQt6.QtWidgets import QApplication
         QApplication.quit()
 

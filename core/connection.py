@@ -1,7 +1,9 @@
 from __future__ import annotations
+import shutil
 import subprocess
 from typing import Callable
 from .tor          import TorManager, TORRC
+from .config       import cfg
 from .dnscrypt     import DNSCryptManager
 from .i2p          import I2PManager
 from .onion_server import OnionServerManager
@@ -29,7 +31,6 @@ class ConnectionManager:
 
     def connect(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool,
                 use_onion_server: bool = False) -> None:
-        # Onion server requires Tor
         if use_onion_server:
             use_tor = True
 
@@ -44,22 +45,79 @@ class ConnectionManager:
             raise RuntimeError("i2pd is not installed.")
 
         self._layers = {}
+        # Track which services were *configured* so rollback can restore them
+        # even if they never reached the started state.
+        self._configured = {
+            "tor": False, "dnscrypt": False,
+            "i2p": False, "onion_server": False,
+        }
 
-        # ── configure + start each layer ──────────────────────────
-        # Each layer is started before applying the firewall so that
-        # the service is ready to accept redirected traffic immediately
-        # when the rules go live.
+        try:
+            self._do_connect(use_tor, use_dnscrypt, use_i2p, use_onion_server)
+        except Exception:
+            self._log("[!] Connect failed — rolling back all changes...")
+            self._rollback(use_tor, use_dnscrypt, use_i2p, use_onion_server)
+            raise
+
+    def _do_connect(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool,
+                    use_onion_server: bool) -> None:
+        # ── PHASE 1: configure every service (nothing started yet) ────────────
+        # All configs are written before the firewall goes up so there is
+        # zero window where traffic can reach the clearnet.
 
         if use_tor:
             self._tor.configure()
+            self._configured["tor"] = True
             if use_onion_server and not is_nixos():
                 self._onion.configure(TORRC)
-                self._onion.start()   # start HTTP file server before Tor routes traffic
+                self._configured["onion_server"] = True
             elif use_onion_server and is_nixos():
                 self._log(
                     "[ONION] NixOS: torrc is managed by NixOS module — "
                     "configure HiddenService manually in your NixOS config."
                 )
+
+        if use_dnscrypt:
+            # When Tor is also active, route DNSCrypt's upstream queries through
+            # Tor SOCKS — DNS is then both encrypted (DNSCrypt) and anonymised (Tor).
+            self._dns.configure(
+                via_tor=use_tor,
+                tor_socks=cfg().get("tor", "socks_port") if use_tor else 9050,
+            )
+            self._configured["dnscrypt"] = True
+
+        if use_i2p:
+            self._i2p.configure(use_tor=use_tor)
+            self._configured["i2p"] = True
+
+        # ── PHASE 2: apply firewall rules BEFORE starting any service ─────────
+        # This closes the race-condition window where traffic could leak to the
+        # clearnet during service bootstrap.  Tor's UID and i2pd's UID are
+        # already exempt inside the rules so they can still reach the network.
+        #
+        # Pre-determine I2P transparent mode: redsocks must be present AND we
+        # are in I2P-only mode (not Tor, not DNSCrypt).
+        i2p_will_transparent = (
+            use_i2p and not use_tor and not use_dnscrypt
+            and shutil.which("redsocks") is not None
+        )
+        self._fw.apply(
+            use_tor, use_dnscrypt, use_i2p,
+            i2p_transparent=i2p_will_transparent,
+        )
+
+        # ── PHASE 3: route system DNS through the active privacy layer ────────
+        # resolvectl is called on any system with systemd-resolved so the stub
+        # resolver forwards queries to our proxy instead of upstream nameservers.
+        # The nftables/iptables redirect on port 53 is a second safety net.
+        self._apply_dns(use_tor, use_dnscrypt)
+
+        # ── PHASE 4: start services (firewall already protects all traffic) ───
+
+        if use_tor:
+            # HTTP file server must be up before Tor establishes the HS circuit.
+            if use_onion_server and not is_nixos():
+                self._onion.start()
             self._tor.start()
             self._layers["tor"] = True
             if use_onion_server:
@@ -70,57 +128,126 @@ class ConnectionManager:
                 else:
                     self._log(
                         "[ONION] .onion address not yet ready. "
-                        f"Check {'/var/lib/tor/entropy-shield-hs/hostname'} once Tor is fully bootstrapped."
+                        f"Check {'/var/lib/tor/entropy-shield-hs/hostname'} "
+                        "once Tor is fully bootstrapped."
                     )
 
         if use_dnscrypt:
-            self._dns.configure()
             self._dns.start()
             self._layers["dnscrypt"] = True
 
         if use_i2p:
-            self._i2p.configure(use_tor=use_tor)
             self._i2p.start()
             self._layers["i2p"] = True
 
-        # ── route system DNS through the active privacy layer ──────
-        # Call resolvectl on any system where systemd-resolved is
-        # running (not just NixOS) so DNS doesn't bypass the proxy.
-        self._apply_dns(use_tor, use_dnscrypt)
+        if use_tor and use_i2p:
+            self._log(
+                "[INFO] Tor+I2P mode: clearnet traffic → Tor TransPort. "
+                "I2P eepsites accessible via proxy 127.0.0.1:"
+                f"{cfg().get('i2p', 'http_port')}. "
+                "i2pd tunnels out via Tor SOCKS (NTCP2, SSU2 disabled)."
+            )
 
-        # ── apply firewall rules ───────────────────────────────────
-        self._fw.apply(use_tor, use_dnscrypt, use_i2p,
-                       i2p_transparent=self._i2p.transparent)
         self._log("[OK] All selected layers are active.")
 
-    def disconnect(self) -> None:
-        # Restore DNS before removing firewall rules
-        self._restore_dns()
+    def _rollback(self, use_tor: bool, use_dnscrypt: bool,
+                  use_i2p: bool, use_onion_server: bool) -> None:
+        """Best-effort reversal of a partial connect().
 
+        Called automatically when connect() raises.  Restores every
+        subsystem that was touched, even if it never reached STARTED state
+        (e.g. dnscrypt config was modified but service never launched).
+        """
+        # Restore DNS routing first so resolver is healthy when rules drop.
+        try:
+            self._restore_dns()
+        except Exception:
+            pass
+        # Pre-restore dnscrypt: puts config back + restarts resolved
+        # before the firewall drops so there is no DNS gap.
+        if self._configured.get("dnscrypt"):
+            try:
+                self._dns.pre_restore()
+            except Exception:
+                pass
+        # Remove firewall rules (restores connectivity).
+        try:
+            self._fw.remove()
+        except Exception:
+            pass
+        # Stop / restore services in reverse order.
+        # stop() is safe to call even when the service was only configured
+        # (not started): it handles the "not running" case gracefully.
+        if use_onion_server:
+            try:
+                self._onion.stop()
+            except Exception:
+                pass
+        if use_i2p and self._configured.get("i2p"):
+            try:
+                self._i2p.stop()
+            except Exception:
+                pass
+        if use_dnscrypt and self._configured.get("dnscrypt"):
+            try:
+                self._dns.stop()
+            except Exception:
+                pass
+        if use_tor and self._configured.get("tor"):
+            try:
+                self._tor.stop()
+            except Exception:
+                pass
+
+    def disconnect(self) -> None:
+        # ── PHASE 1: restore DNS routing ──────────────────────────────────
+        # For Tor-only: resolvectl revert + drop-in removal (resolved running).
+        try:
+            self._restore_dns()
+        except Exception:
+            pass
+
+        # ── PHASE 2: pre-restore DNSCrypt so there is no DNS gap ──────────
+        # If dnscrypt had stopped systemd-resolved to free port 53, restart it
+        # BEFORE removing nftables.  Once resolved is up, nftables can drop
+        # without leaving a window where DNS is unavailable.
+        if self._layers.get("dnscrypt"):
+            try:
+                self._dns.pre_restore()
+            except Exception:
+                pass
+
+        # ── PHASE 3: remove firewall (DNS is already operational) ─────────
         self._fw.remove()
 
+        # ── PHASE 4: stop remaining services ──────────────────────────────
         if self._layers.get("onion_server"):
-            self._onion.stop()
+            try:
+                self._onion.stop()
+            except Exception:
+                pass
         if self._layers.get("i2p"):
-            self._i2p.stop()
+            try:
+                self._i2p.stop()
+            except Exception:
+                pass
         if self._layers.get("dnscrypt"):
-            self._dns.stop()
+            try:
+                self._dns.stop()
+            except Exception:
+                pass
         if self._layers.get("tor"):
-            self._tor.stop()
+            try:
+                self._tor.stop()
+            except Exception:
+                pass
 
         self._layers.clear()
         self._log("[OK] All layers disconnected.")
 
-    # ── DNS routing via resolvectl ─────────────────────────────────
+    # ── DNS routing via resolvectl ─────────────────────────────────────────────
 
     def _apply_dns(self, use_tor: bool, use_dnscrypt: bool) -> None:
-        """Route system DNS through the active privacy layer.
-
-        Uses resolvectl when systemd-resolved is running so that the
-        stub resolver forwards queries to our proxy instead of the
-        upstream nameservers.  The nftables/iptables redirect rule
-        catches any remaining port-53 traffic as a second safety net.
-        """
         if not (is_nixos() or _resolved_running()):
             return
         if use_dnscrypt:

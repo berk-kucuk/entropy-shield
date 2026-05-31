@@ -53,6 +53,7 @@ _FIREFOX_BINS = ["firefox", "firefox-esr"]
 
 
 def _real_user() -> tuple[int, pwd.struct_passwd] | None:
+    # When running as root via pkexec/sudo, find the original user.
     for var in ("PKEXEC_UID", "SUDO_UID"):
         val = os.environ.get(var)
         if val and val.isdigit():
@@ -61,6 +62,14 @@ def _real_user() -> tuple[int, pwd.struct_passwd] | None:
                 return uid, pwd.getpwuid(uid)
             except KeyError:
                 pass
+    # When the GUI runs as a normal user (runner subprocess handles root ops),
+    # use the current process's own UID directly.
+    uid = os.getuid()
+    if uid != 0:
+        try:
+            return uid, pwd.getpwuid(uid)
+        except KeyError:
+            pass
     return None
 
 

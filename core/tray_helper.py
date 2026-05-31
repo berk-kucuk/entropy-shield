@@ -102,6 +102,10 @@ class TrayHelper(QObject):
         self._conn_action.triggered.connect(self._send_connect_toggle)
         self._menu.addAction(self._conn_action)
 
+        self._act_panic = QAction("☢  Emergency Disconnect")
+        self._act_panic.triggered.connect(self._send_panic)
+        self._menu.addAction(self._act_panic)
+
         self._menu.addSeparator()
 
         self._act_quit = QAction("Quit")
@@ -146,6 +150,10 @@ class TrayHelper(QObject):
             sys.stdout.write("disconnect\n")
         else:
             sys.stdout.write("connect\n")
+        sys.stdout.flush()
+
+    def _send_panic(self):
+        sys.stdout.write("panic\n")
         sys.stdout.flush()
 
     def _send_quit(self):

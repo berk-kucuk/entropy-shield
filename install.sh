@@ -39,6 +39,8 @@ DEST=/opt/entropy-shield
 WRAPPER=/usr/local/bin/entropy-shield
 DESKTOP=/usr/share/applications/entropy-shield.desktop
 POLKIT=/usr/share/polkit-1/actions/org.entropyshield.policy
+SYSTEMD_SERVICE=/etc/systemd/system/entropy-shield.service
+SUDOERS_FILE=/etc/sudoers.d/entropy-shield
 ICON_SYS_PIX=/usr/share/pixmaps/entropy-shield.png
 ICON_SYS_HIC=/usr/share/icons/hicolor/256x256/apps/entropy-shield.png
 
@@ -87,9 +89,20 @@ _remove_common() {
         fi
     done
 
+    # Stop and disable entropy-shield headless service if installed
+    if systemctl is-active --quiet entropy-shield 2>/dev/null; then
+        systemctl stop entropy-shield && ok "Stopped entropy-shield service"
+    fi
+    if systemctl is-enabled --quiet entropy-shield 2>/dev/null; then
+        systemctl disable entropy-shield && ok "Disabled entropy-shield service"
+    fi
+
     step "Removing files"
     rm -rf  "$DEST"
     rm -f   "$WRAPPER" "$DESKTOP" "$POLKIT" "$ICON_SYS_PIX" "$ICON_SYS_HIC"
+    rm -f   "$SYSTEMD_SERVICE"
+    rm -f   "$SUDOERS_FILE"    # passwordless mode sudoers entry
+    systemctl daemon-reload 2>/dev/null || true
     gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
     update-desktop-database /usr/share/applications 2>/dev/null || true
     ok "Application files removed."
@@ -113,6 +126,7 @@ do_uninstall() {
 do_uninstall_nixos() {
     step "Removing application files"
     rm -rf "$DEST"
+    rm -f  "$SUDOERS_FILE"
     ok "Removed $DEST"
 
     local module=/etc/nixos/entropy-shield.nix
@@ -187,8 +201,10 @@ pkg_arch() {
     pacman -Sy --needed --noconfirm \
         python python-pip python-pyqt6 \
         tor dnscrypt-proxy i2pd \
-        nftables iptables-nft iproute2 polkit
+        nftables iptables-nft iproute2 polkit \
+        conntrack-tools bind
     _aur_install redsocks
+    _aur_install obfs4proxy
 }
 
 pkg_debian() {
@@ -207,7 +223,7 @@ pkg_debian() {
         polkitd libpolkit-agent-1-0 2>/dev/null || \
         warn "polkit not installed — some privilege escalation features may not work."
 
-    for pkg in dnscrypt-proxy i2pd redsocks; do
+    for pkg in dnscrypt-proxy i2pd redsocks obfs4proxy conntrack dnsutils; do
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$pkg" 2>/dev/null \
             || warn "$pkg not found in apt repos — install manually if needed."
     done
@@ -219,7 +235,8 @@ pkg_fedora() {
     step "Installing packages (dnf)"
     dnf install -y -q \
         python3 python3-pip \
-        tor nftables iptables iproute polkit
+        tor nftables iptables iproute polkit \
+        conntrack-tools bind-utils
 
     # redsocks
     command -v redsocks &>/dev/null || \
@@ -229,6 +246,11 @@ pkg_fedora() {
             dnf install -y -q redsocks 2>/dev/null || \
                 warn "redsocks not installed. Transparent I2P routing unavailable."
         }
+
+    # obfs4proxy (for Tor bridges)
+    command -v obfs4proxy &>/dev/null || \
+        dnf install -y -q obfs4proxy 2>/dev/null || \
+        warn "obfs4proxy not installed. Tor bridge support (obfs4) unavailable."
 
     # dnscrypt-proxy
     dnf install -y -q dnscrypt-proxy 2>/dev/null || {
@@ -257,7 +279,7 @@ pkg_opensuse() {
         python3 python3-pip \
         tor nftables iptables iproute2 polkit
 
-    for pkg in dnscrypt-proxy i2pd redsocks; do
+    for pkg in dnscrypt-proxy i2pd redsocks obfs4proxy conntrack-tools bind-utils; do
         zypper install -y "$pkg" 2>/dev/null \
             || warn "$pkg not found in zypper repos — install manually if needed."
     done
@@ -310,6 +332,9 @@ in
     pythonEnv
     pkgs.dnscrypt-proxy
     pkgs.i2pd
+    pkgs.conntrack-tools
+    pkgs.obfs4
+    pkgs.bind                 # provides dig for leak tests
     desktopEntry
     (pkgs.writeShellScriptBin "entropy-shield" ''
       exec \${pythonEnv}/bin/python3 /opt/entropy-shield/main.py "\$@"
@@ -361,13 +386,30 @@ in
   };
 
   security.polkit.extraConfig = ''
+    /* Allow wheel-group users to run the entropy-shield privileged runner
+       via pkexec without a password prompt.  Remove this block to require
+       password authentication on every connect/disconnect. */
     polkit.addRule(function(action, subject) {
-      if (action.id === "org.freedesktop.policykit.exec" &&
+      if (action.id === "org.entropyshield.run" &&
           subject.isInGroup("wheel")) {
         return polkit.Result.YES;
       }
     });
   '';
+
+  /* Optional: install as a system service for headless / server use.
+     Enable with: systemctl enable --now entropy-shield             */
+  systemd.services.entropy-shield = {
+    description = "Entropy Shield — Network Privacy (Headless)";
+    after       = [ "network-online.target" ];
+    wants       = [ "network-online.target" ];
+    serviceConfig = {
+      Type       = "simple";
+      ExecStart  = "\${pkgs.python3}/bin/python3 /opt/entropy-shield/core/privileged_runner.py --headless";
+      Restart    = "on-failure";
+      RestartSec = 10;
+    };
+  };
 }
 NIXEOF
     ok "Module written."
@@ -440,6 +482,7 @@ common_install() {
     step "Creating launcher → $WRAPPER"
     cat > "$WRAPPER" <<'EOF'
 #!/usr/bin/env bash
+# Entropy Shield launcher — runs as normal user; privileged operations use pkexec/sudo
 exec python3 /opt/entropy-shield/main.py "$@"
 EOF
     chmod 755 "$WRAPPER"
@@ -464,6 +507,9 @@ EOF
     ok "Desktop entry created."
 
     step "Creating polkit policy"
+    # The polkit action covers the privileged runner (core/privileged_runner.py),
+    # NOT main.py.  The GUI runs as a normal user and calls pkexec to launch the
+    # runner when the user clicks Connect or Disconnect.
     mkdir -p /usr/share/polkit-1/actions
     cat > "$POLKIT" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -472,19 +518,29 @@ EOF
   "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <action id="org.entropyshield.run">
-    <description>Run Entropy Shield</description>
-    <message>Authentication required to manage network privacy layers</message>
+    <description>Entropy Shield — Manage Network Privacy</description>
+    <message>Authentication required to connect or disconnect privacy layers (Tor, DNSCrypt, I2P)</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/python3</annotate>
-    <annotate key="org.freedesktop.policykit.exec.argv1">/opt/entropy-shield/main.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">/opt/entropy-shield/core/privileged_runner.py</annotate>
   </action>
 </policyconfig>
 EOF
     ok "Polkit policy created."
+
+    step "Installing systemd service (headless/server mode)"
+    if [[ -f "$SCRIPT_DIR/entropy-shield.service" ]]; then
+        cp "$SCRIPT_DIR/entropy-shield.service" "$SYSTEMD_SERVICE"
+        systemctl daemon-reload 2>/dev/null || true
+        ok "Service file installed → $SYSTEMD_SERVICE"
+        info "To enable headless mode: systemctl enable --now entropy-shield"
+    else
+        warn "entropy-shield.service not found — headless mode unavailable."
+    fi
 
     # SELinux context (Fedora/RHEL/CentOS)
     if command -v setenforce &>/dev/null && selinuxenabled 2>/dev/null; then

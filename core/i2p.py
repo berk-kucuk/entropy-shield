@@ -102,9 +102,16 @@ class I2PManager:
 
         if use_tor:
             tor_socks = cfg().get("tor", "socks_port")
+            # Route i2pd outbound connections through Tor's SOCKS proxy so
+            # I2P peers are reached anonymously (NTCP2 over Tor).
             content = _set_section_option(
                 content, "ntcp2", "proxy", f"socks://127.0.0.1:{tor_socks}"
             )
+            # Disable SSU2 (UDP-based I2P transport) entirely when Tor is active.
+            # SSU2 uses UDP which is blocked by the Tor firewall rules, so i2pd
+            # would silently fail SSU2 handshakes. Disabling it prevents false
+            # error logs and UDP leak attempts.
+            content = _set_section_option(content, "ssu2", "enabled", "false")
 
         with open(self._config, "w") as f:
             f.write(content)

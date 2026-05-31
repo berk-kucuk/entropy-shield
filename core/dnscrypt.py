@@ -18,6 +18,7 @@ _LISTEN_RE    = re.compile(r"^listen_addresses\s*=.*$", re.MULTILINE)
 _DNSSEC_RE    = re.compile(r"^require_dnssec\s*=.*$", re.MULTILINE)
 _NOLOG_RE     = re.compile(r"^require_nolog\s*=.*$", re.MULTILINE)
 _NOFILTER_RE  = re.compile(r"^require_nofilter\s*=.*$", re.MULTILINE)
+_PROXY_RE     = re.compile(r"^#?\s*proxy\s*=.*$", re.MULTILINE)
 
 
 class DNSCryptManager:
@@ -30,8 +31,8 @@ class DNSCryptManager:
     def is_installed(self) -> bool:
         return bool(shutil.which("dnscrypt-proxy"))
 
-    def configure(self) -> None:
-        self._log("[DNS] Configuring dnscrypt-proxy...")
+    def configure(self, via_tor: bool = False, tor_socks: int = 9050) -> None:
+        self._log("[DNS] Configuring dnscrypt-proxy…")
         self._was_active = self._service_active("dnscrypt-proxy")
         self._resolved_was_active = self._service_active("systemd-resolved")
 
@@ -69,11 +70,21 @@ class DNSCryptManager:
         content = _replace_or_append(content, _NOLOG_RE,    "require_nolog",    nolog)
         content = _replace_or_append(content, _NOFILTER_RE, "require_nofilter", nofilter)
 
+        if via_tor:
+            # Route DNSCrypt upstream queries through Tor SOCKS so DNS is
+            # both encrypted (DNSCrypt) AND anonymised (Tor network).
+            proxy_val = f"'socks5://127.0.0.1:{tor_socks}'"
+            content = _replace_or_append(content, _PROXY_RE, "proxy", proxy_val)
+            self._log(f"[DNS] dnscrypt-proxy upstream → Tor SOCKS :{tor_socks}")
+        else:
+            # Remove any leftover proxy setting from a previous Tor+DNS session.
+            content = _PROXY_RE.sub("", content)
+
         with open(self._config, "w") as f:
             f.write(content)
 
         if self._resolved_was_active:
-            self._log("[DNS] Stopping systemd-resolved to free port 53...")
+            self._log("[DNS] Stopping systemd-resolved to free port 53…")
             subprocess.run(["systemctl", "stop", "systemd-resolved"],
                            capture_output=True)
 
@@ -88,6 +99,26 @@ class DNSCryptManager:
         self._wait_active("dnscrypt-proxy", timeout=30)
         self._log("[DNS] dnscrypt-proxy active.")
 
+    def pre_restore(self) -> None:
+        """Restore config and restart systemd-resolved BEFORE nftables is removed.
+
+        Called by ConnectionManager.disconnect() so DNS is immediately available
+        once the firewall rules drop — no gap between nftables removal and resolver
+        becoming ready.  stop() skips the steps already done here.
+        """
+        if is_nixos():
+            return
+        if self._config:
+            bak = self._config + _BAK_SUFFIX
+            if os.path.exists(bak):
+                shutil.copy2(bak, self._config)
+                os.unlink(bak)
+                self._config = None  # signal stop() to skip config restore
+        if self._resolved_was_active:
+            subprocess.run(["systemctl", "start", "systemd-resolved"],
+                           capture_output=True)
+            self._resolved_was_active = False  # signal stop() to skip restart
+
     def stop(self) -> None:
         if is_nixos():
             subprocess.run(["systemctl", "stop", "dnscrypt-proxy"],
@@ -98,6 +129,7 @@ class DNSCryptManager:
         self._log("[DNS] Stopping dnscrypt-proxy...")
         subprocess.run(["systemctl", "stop", "dnscrypt-proxy"], capture_output=True)
 
+        # Restore config and restart resolved only if pre_restore() wasn't called.
         if self._config:
             bak = self._config + _BAK_SUFFIX
             if os.path.exists(bak):

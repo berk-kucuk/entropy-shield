@@ -348,6 +348,21 @@ QPushButton#quitBtn:hover {{
     border-color: {c['close_hover']};
     color: {c['close_hover']};
 }}
+QPushButton#panicBtn {{
+    background: rgba(180,30,30,0.22);
+    border: 1px solid rgba(210,55,48,0.55);
+    border-radius: 13px;
+    min-width: 28px; max-width: 28px;
+    min-height: 28px; max-height: 28px;
+    font-size: {pf(13)};
+    padding: 0 0 1px 0;
+    color: rgba(210,80,70,0.90);
+}}
+QPushButton#panicBtn:hover {{
+    background: rgba(210,40,40,0.40);
+    border-color: rgba(255,80,70,0.90);
+    color: rgba(255,100,90,1.0);
+}}
 
 /* ── status ── */
 QLabel#statusTitle {{

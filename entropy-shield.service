@@ -1,0 +1,19 @@
+[Unit]
+Description=Entropy Shield — Network Privacy (Headless)
+Documentation=https://github.com/berk-kucuk/entropy-shield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/entropy-shield/core/privileged_runner.py --headless
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=entropy-shield
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

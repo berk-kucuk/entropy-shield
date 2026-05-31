@@ -8,11 +8,17 @@ _FILE = _DIR / "config.json"
 _DEFAULTS: dict = {
     "theme": "oled",
     "tor": {
-        "trans_port":   9040,
-        "dns_port":     5300,
-        "socks_port":   9050,
-        "exit_nodes":   "",
-        "strict_nodes": False,
+        "trans_port":    9040,
+        "dns_port":      5300,
+        "socks_port":    9050,
+        "control_port":  9051,
+        "exit_nodes":    "",
+        "strict_nodes":  False,
+    },
+    "bridges": {
+        "enabled":   False,
+        "transport": "obfs4",   # obfs4 | meek-azure | snowflake | manual
+        "lines":     [],        # list of "Bridge ..." strings
     },
     "dnscrypt": {
         "port":              5353,
@@ -30,9 +36,19 @@ _DEFAULTS: dict = {
         "hs_port":    80,
         "serve_dir":  "",
     },
-    "kill_switch":  True,
-    "auto_connect": False,
-    "autostart":    True,
+    "per_app_routing": {
+        "enabled":    False,
+        "rules":      [],  # [{name, uid_or_user, action}]  action: tor|direct|block
+    },
+    "auto_reconnect": {
+        "enabled":         True,
+        "delay_seconds":   15,
+        "max_attempts":    3,
+    },
+    "update_check":   True,
+    "kill_switch":    True,
+    "auto_connect":   False,
+    "autostart":      True,
 }
 
 
@@ -65,7 +81,11 @@ class Config:
 
     def save(self) -> None:
         _DIR.mkdir(parents=True, exist_ok=True)
-        _FILE.write_text(json.dumps(self._data, indent=2))
+        # Write to a temp file then rename atomically so a crash mid-write
+        # never leaves a corrupted config.json.
+        tmp = _FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._data, indent=2))
+        tmp.replace(_FILE)
 
     def get(self, *keys):
         d = self._data
