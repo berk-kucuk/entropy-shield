@@ -254,6 +254,8 @@ class TorManager:
                     resp = b""
                     while True:
                         chunk = s.recv(4096)
+                        if not chunk:
+                            break
                         resp += chunk
                         if b"250 OK" in resp or b"515 " in resp:
                             break

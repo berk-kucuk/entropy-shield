@@ -90,9 +90,11 @@ def _session_env(uid: int, pw: pwd.struct_passwd) -> dict[str, str]:
             if not pid_s.isdigit():
                 continue
             try:
-                if f"\nUid:\t{uid}\t" not in open(f"/proc/{pid_s}/status").read():
-                    continue
-                raw = open(f"/proc/{pid_s}/environ", "rb").read()
+                with open(f"/proc/{pid_s}/status") as _sf:
+                    if f"\nUid:\t{uid}\t" not in _sf.read():
+                        continue
+                with open(f"/proc/{pid_s}/environ", "rb") as _ef:
+                    raw = _ef.read()
                 for item in raw.split(b"\x00"):
                     if b"=" not in item:
                         continue

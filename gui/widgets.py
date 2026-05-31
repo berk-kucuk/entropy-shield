@@ -575,6 +575,8 @@ class NetSpeedBar(QWidget):
                     if iface.strip() == "lo":
                         continue
                     fields = data.split()
+                    if len(fields) < 9:
+                        continue
                     rx += int(fields[0])
                     tx += int(fields[8])
         except Exception:

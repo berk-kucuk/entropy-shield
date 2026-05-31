@@ -294,6 +294,32 @@ class _PanicWorker(QThread):
         self.done.emit("\n".join(msgs))
 
 
+# ── Health check worker ──────────────────────────────────────
+
+class _HealthCheckWorker(QThread):
+    dropped = pyqtSignal(str)  # emits service name when a service is down
+
+    def __init__(self, active_layers: list, runner_alive: bool):
+        super().__init__()
+        self._active_layers = active_layers
+        self._runner_alive  = runner_alive
+
+    def run(self) -> None:
+        if not self._runner_alive:
+            self.dropped.emit("__runner__")
+            return
+        for layer, service in _SERVICE_MAP.items():
+            if layer not in self._active_layers:
+                continue
+            r = subprocess.run(
+                ["systemctl", "is-active", service],
+                capture_output=True, text=True,
+            )
+            if r.stdout.strip() != "active":
+                self.dropped.emit(service)
+                return
+
+
 # ── Circuit info worker ───────────────────────────────────────
 
 class _CircuitInfoWorker(QThread):
@@ -766,6 +792,7 @@ class MainWindow(QMainWindow):
         self._leak_worker:     _LeakTestWorker | None    = None
         self._update_worker:   _UpdateCheckWorker | None = None
         self._circuit_worker:  _CircuitInfoWorker | None = None
+        self._health_worker:   _HealthCheckWorker | None = None
         self._runner_proc:     subprocess.Popen | None   = None
         self._active_layers:   list[str]                 = []
 
@@ -1220,13 +1247,24 @@ class MainWindow(QMainWindow):
     def _check_service_health(self) -> None:
         if not self._connected or self._worker is not None:
             return
+        if self._health_worker and self._health_worker.isRunning():
+            return
 
-        # Check privileged runner process liveness (covers Tor subprocess too).
-        if self._runner_proc is not None and self._runner_proc.poll() is not None:
+        runner_alive = (
+            self._runner_proc is not None and self._runner_proc.poll() is None
+        )
+        self._health_worker = _HealthCheckWorker(
+            list(self._active_layers), runner_alive
+        )
+        self._health_worker.dropped.connect(self._on_health_dropped)
+        self._health_worker.start()
+
+    def _on_health_dropped(self, service: str) -> None:
+        self._health_timer.stop()
+        if service == "__runner__":
             self._append_log(
                 "[!] KILL SWITCH: Privileged runner exited unexpectedly. "
                 "Firewall rules may still be active — reconnect or reboot to clear.")
-            self._health_timer.stop()
             self._runner_proc = None
             self._connected = False
             self._active_layers = []
@@ -1243,24 +1281,12 @@ class MainWindow(QMainWindow):
             self._new_circuit_btn.setEnabled(False)
             self._speed_bar.set_active(False)
             self._tray_send("disconnected")
-            return
-
-        # Check systemd services (no root needed for is-active).
-        for layer, service in _SERVICE_MAP.items():
-            if layer not in self._active_layers:
-                continue
-            r = subprocess.run(
-                ["systemctl", "is-active", service],
-                capture_output=True, text=True,
-            )
-            if r.stdout.strip() != "active":
-                self._append_log(
-                    f"[!] KILL SWITCH: {service} dropped — "
-                    "emergency disconnect triggered.")
-                self._health_timer.stop()
-                self._start_worker("disconnect", {})
-                self._maybe_schedule_reconnect()
-                return
+        else:
+            self._append_log(
+                f"[!] KILL SWITCH: {service} dropped — "
+                "emergency disconnect triggered.")
+            self._start_worker("disconnect", {})
+            self._maybe_schedule_reconnect()
 
     def _maybe_schedule_reconnect(self) -> None:
         """Schedule auto-reconnect if the feature is enabled."""
@@ -1546,112 +1572,6 @@ class MainWindow(QMainWindow):
 
     # ── system tray ───────────────────────────────────────────
 
-    def _original_uid(self) -> int | None:
-        for var in ("PKEXEC_UID", "SUDO_UID"):
-            val = os.environ.get(var)
-            if val and val.isdigit():
-                return int(val)
-        try:
-            out = subprocess.check_output(
-                ["loginctl", "list-sessions", "--no-legend"],
-                text=True, stderr=subprocess.DEVNULL,
-            )
-            for line in out.splitlines():
-                parts = line.split()
-                if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) != 0:
-                    return int(parts[1])
-        except Exception:
-            pass
-        return None
-
-    def _user_env(self, uid: int, username: str, user_home: str) -> dict:
-        runtime_dir = f"/run/user/{uid}"
-        env: dict[str, str] = {
-            "HOME":                   user_home,
-            "USER":                   username,
-            "LOGNAME":                username,
-            "XDG_RUNTIME_DIR":        runtime_dir,
-            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
-        }
-        try:
-            session_id = None
-            out = subprocess.check_output(
-                ["loginctl", "list-sessions", "--no-legend"],
-                text=True, stderr=subprocess.DEVNULL,
-            )
-            for line in out.splitlines():
-                parts = line.split()
-                if len(parts) >= 2 and parts[1] == str(uid):
-                    session_id = parts[0]
-                    break
-            if session_id:
-                props = subprocess.check_output(
-                    ["loginctl", "show-session", session_id],
-                    text=True, stderr=subprocess.DEVNULL,
-                )
-                for line in props.splitlines():
-                    if line.startswith("Display="):
-                        val = line.split("=", 1)[1].strip()
-                        if val:
-                            env["DISPLAY"] = val
-                    elif line.startswith("Type=") and "wayland" in line:
-                        wd = os.environ.get("WAYLAND_DISPLAY", "")
-                        if not wd:
-                            try:
-                                for f in os.listdir(runtime_dir):
-                                    if f.startswith("wayland-"):
-                                        wd = f
-                                        break
-                            except Exception:
-                                pass
-                        if wd:
-                            env["WAYLAND_DISPLAY"] = wd
-                            env.setdefault("QT_QPA_PLATFORM", "wayland")
-        except Exception:
-            pass
-
-        if "DISPLAY" not in env and "WAYLAND_DISPLAY" not in env:
-            try:
-                for pid_s in os.listdir("/proc"):
-                    if not pid_s.isdigit():
-                        continue
-                    try:
-                        if f"\nUid:\t{uid}\t" not in open(
-                                f"/proc/{pid_s}/status").read():
-                            continue
-                        raw = open(f"/proc/{pid_s}/environ", "rb").read()
-                        for item in raw.split(b"\x00"):
-                            if b"=" not in item:
-                                continue
-                            k, _, v = item.partition(b"=")
-                            key = k.decode(errors="replace")
-                            if key in ("DISPLAY", "WAYLAND_DISPLAY",
-                                       "DBUS_SESSION_BUS_ADDRESS",
-                                       "XDG_RUNTIME_DIR",
-                                       "QT_QPA_PLATFORMTHEME",
-                                       "XDG_CURRENT_DESKTOP",
-                                       "KDE_FULL_SESSION"):
-                                env.setdefault(key, v.decode(errors="replace"))
-                        if "DISPLAY" in env or "WAYLAND_DISPLAY" in env:
-                            break
-                    except (PermissionError, FileNotFoundError, ProcessLookupError):
-                        continue
-            except Exception:
-                pass
-
-        if "WAYLAND_DISPLAY" not in env and "DISPLAY" not in env:
-            try:
-                for f in os.listdir(runtime_dir):
-                    if f.startswith("wayland-") and not f.endswith(".lock"):
-                        env["WAYLAND_DISPLAY"] = f
-                        env.setdefault("QT_QPA_PLATFORM", "wayland")
-                        break
-            except Exception:
-                pass
-
-        return env
-
     def _build_tray(self) -> None:
         tray_logo = _logo_for_theme(cfg().get("theme"))
         try:
@@ -1697,8 +1617,8 @@ class MainWindow(QMainWindow):
             self._tray_poll.stop()
             # If we were in the middle of quitting, finish it.
             if self._quitting:
-                from PyQt6.QtWidgets import QApplication
-                QApplication.quit()
+                import os as _os
+                _os._exit(0)
             return
 
         ready, _, _ = select.select([self._tray_proc.stdout], [], [], 0)
@@ -1725,19 +1645,18 @@ class MainWindow(QMainWindow):
                 pass
 
     def _do_quit(self) -> None:
+        import os as _os
         self._tray_send("ack_quit")
         if self._tray_proc:
             try:
-                self._tray_proc.wait(timeout=2)
+                self._tray_proc.wait(timeout=1)
             except Exception:
-                # Timed out or already dead — kill to be sure.
                 try:
                     self._tray_proc.kill()
                 except Exception:
                     pass
             self._tray_proc = None
-        from PyQt6.QtWidgets import QApplication
-        QApplication.quit()
+        _os._exit(0)
 
     def _tray_show(self) -> None:
         self.showNormal()
