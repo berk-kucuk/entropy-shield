@@ -157,9 +157,12 @@ class TrayHelper(QObject):
         sys.stdout.flush()
 
     def _send_quit(self):
-        self._tray.hide()
         sys.stdout.write("quit\n")
         sys.stdout.flush()
+        # Hide after a short delay so the main process has time to exit first.
+        # Calling hide() immediately on Wayland can crash the helper before
+        # the main process reads the "quit" message from the pipe.
+        QTimer.singleShot(500, self._tray.hide)
         QTimer.singleShot(8000, QApplication.quit)
 
     # ── incoming messages (main → helper) ─────────────────────────

@@ -9,8 +9,32 @@ for _p in ("/run/current-system/sw/bin", "/run/wrappers/bin",
     if _p not in os.environ.get("PATH", ""):
         os.environ["PATH"] = _p + ":" + os.environ.get("PATH", "")
 
+# Keep a module-level reference so the lock is held for the entire lifetime
+# of the process.  Without this the file handle is GC'd and the lock drops.
+_instance_lock = None
+
+
+def _acquire_lock() -> bool:
+    """Return True if this is the first instance, False if one is already running."""
+    global _instance_lock
+    import fcntl
+    lock_path = os.path.join(
+        os.environ.get("XDG_RUNTIME_DIR", "/tmp"),
+        "entropy-shield.lock",
+    )
+    try:
+        _instance_lock = open(lock_path, "w")
+        fcntl.flock(_instance_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
 
 def main() -> None:
+    if not _acquire_lock():
+        print("Entropy Shield is already running.")
+        sys.exit(0)
+
     # Headless / systemd service mode: hand off to the privileged runner.
     if "--service" in sys.argv or "--headless" in sys.argv:
         import subprocess, shutil

@@ -194,6 +194,8 @@ class _Worker(QThread):
                 raise RuntimeError(
                     f"Privileged process failed to start (exit code: {code}).")
             line = raw.decode(errors="replace").rstrip()
+            if line:
+                self.log.emit(line)   # show HEAL and startup messages in the GUI
             if line == "[RUNNER] started":
                 break
             if "[ERR]" in line:
@@ -297,26 +299,53 @@ class _PanicWorker(QThread):
 # ── Health check worker ──────────────────────────────────────
 
 class _HealthCheckWorker(QThread):
-    dropped = pyqtSignal(str)  # emits service name when a service is down
+    dropped = pyqtSignal(str, str)  # (service_name, reason_detail)
 
     def __init__(self, active_layers: list, runner_alive: bool):
         super().__init__()
         self._active_layers = active_layers
         self._runner_alive  = runner_alive
 
+    @staticmethod
+    def _is_active(service: str) -> str:
+        """Return the raw systemctl is-active output for *service*."""
+        r = subprocess.run(
+            ["systemctl", "is-active", service],
+            capture_output=True, text=True,
+        )
+        return r.stdout.strip()
+
+    @staticmethod
+    def _last_log(service: str) -> str:
+        """Return the last few journal lines for *service* (best-effort)."""
+        try:
+            r = subprocess.run(
+                ["journalctl", "-u", service, "-n", "5", "--no-pager",
+                 "--output=short"],
+                capture_output=True, text=True, timeout=3,
+            )
+            return r.stdout.strip()
+        except Exception:
+            return ""
+
     def run(self) -> None:
+        import time
         if not self._runner_alive:
-            self.dropped.emit("__runner__")
+            self.dropped.emit("__runner__", "Runner process exited.")
             return
         for layer, service in _SERVICE_MAP.items():
             if layer not in self._active_layers:
                 continue
-            r = subprocess.run(
-                ["systemctl", "is-active", service],
-                capture_output=True, text=True,
-            )
-            if r.stdout.strip() != "active":
-                self.dropped.emit(service)
+            state = self._is_active(service)
+            if state == "active":
+                continue
+            # Not active — wait 3 s and recheck to filter out transient states
+            # (e.g. "activating", "reloading") that resolve on their own.
+            time.sleep(3)
+            state = self._is_active(service)
+            if state != "active":
+                detail = self._last_log(service)
+                self.dropped.emit(service, detail)
                 return
 
 
@@ -1240,7 +1269,7 @@ class MainWindow(QMainWindow):
             self._exit_country   = ""
             self._circuit_count  = 0
             self._tray_send("disconnected")
-            self._append_log(f"[ERR] {info}")
+            self._append_log(info if info.startswith("[ERR]") else f"[ERR] {info}")
 
     # ── kill switch ───────────────────────────────────────────
 
@@ -1259,7 +1288,7 @@ class MainWindow(QMainWindow):
         self._health_worker.dropped.connect(self._on_health_dropped)
         self._health_worker.start()
 
-    def _on_health_dropped(self, service: str) -> None:
+    def _on_health_dropped(self, service: str, detail: str) -> None:
         self._health_timer.stop()
         if service == "__runner__":
             self._append_log(
@@ -1283,8 +1312,11 @@ class MainWindow(QMainWindow):
             self._tray_send("disconnected")
         else:
             self._append_log(
-                f"[!] KILL SWITCH: {service} dropped — "
-                "emergency disconnect triggered.")
+                f"[!] KILL SWITCH: {service} dropped — emergency disconnect triggered.")
+            if detail:
+                for ln in detail.splitlines()[-5:]:
+                    if ln.strip():
+                        self._append_log(f"[!] {ln.strip()}")
             self._start_worker("disconnect", {})
             self._maybe_schedule_reconnect()
 
@@ -1606,6 +1638,27 @@ class MainWindow(QMainWindow):
     def _poll_tray(self) -> None:
         if not self._tray_proc:
             return
+
+        # Always drain stdout before checking if the proc is dead.
+        # On Wayland the tray helper can crash immediately after writing
+        # "quit", so the message may sit in the pipe buffer while poll()
+        # already reports the process as gone.
+        try:
+            ready, _, _ = select.select([self._tray_proc.stdout], [], [], 0)
+            if ready:
+                line = self._tray_proc.stdout.readline().decode(
+                    errors="replace").strip()
+                if   line == "show":       self._tray_show()
+                elif line == "connect":    self._tray_connect()
+                elif line == "disconnect": self._tray_disconnect()
+                elif line == "panic":      self._on_panic()
+                elif line == "quit":       self._tray_quit()
+        except Exception:
+            pass
+
+        if not self._tray_proc:
+            return
+
         if self._tray_proc.poll() is not None:
             try:
                 err = self._tray_proc.stderr.read().decode(errors="replace").strip()
@@ -1615,26 +1668,9 @@ class MainWindow(QMainWindow):
                 pass
             self._tray_proc = None
             self._tray_poll.stop()
-            # If we were in the middle of quitting, finish it.
             if self._quitting:
                 import os as _os
                 _os._exit(0)
-            return
-
-        ready, _, _ = select.select([self._tray_proc.stdout], [], [], 0)
-        if not ready:
-            return
-        try:
-            line = self._tray_proc.stdout.readline().decode(
-                errors="replace").strip()
-        except Exception:
-            return
-
-        if   line == "show":       self._tray_show()
-        elif line == "connect":    self._tray_connect()
-        elif line == "disconnect": self._tray_disconnect()
-        elif line == "panic":      self._on_panic()
-        elif line == "quit":       self._tray_quit()
 
     def _tray_send(self, cmd: str) -> None:
         if self._tray_proc and self._tray_proc.poll() is None:

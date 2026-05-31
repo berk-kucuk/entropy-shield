@@ -117,12 +117,31 @@ def _startup_heal(log) -> None:
             log("[HEAL] Restarting systemd-resolved (was stopped by previous session)…")
             _sp.run(["systemctl", "start", "systemd-resolved"], capture_output=True)
 
-    # ── 4. Remove stale Tor lock file ───────────────────────────
-    # _kill_orphaned_tor() in TorManager handles this at configure() time,
-    # but remove it here too as an early safety net.
+    # ── 4. Kill orphaned Tor and remove its lock file ───────────
+    # IMPORTANT: kill the process FIRST, then remove the lock file.
+    # Removing the lock without killing leaves the orphan holding
+    # ports 9040/9050/9051 so the next connect attempt fails.
+    import signal as _sig
     lock = "/run/entropy-shield/tor-data/lock"
     if _os.path.exists(lock):
-        log("[HEAL] Removing stale Tor lock file from previous session…")
+        log("[HEAL] Stale Tor lock file found — killing orphaned process…")
+        try:
+            with open(lock) as _lf:
+                _old_pid = int(_lf.read().strip())
+            try:
+                with open(f"/proc/{_old_pid}/comm") as _cf:
+                    if "tor" in _cf.read().strip().lower():
+                        _os.kill(_old_pid, _sig.SIGTERM)
+                        import time as _tm; _tm.sleep(0.5)
+                        try:
+                            _os.kill(_old_pid, _sig.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        log(f"[HEAL] Killed orphaned Tor (PID {_old_pid}).")
+            except (FileNotFoundError, ValueError, ProcessLookupError):
+                pass
+        except (FileNotFoundError, ValueError):
+            pass
         try:
             _os.unlink(lock)
         except Exception:

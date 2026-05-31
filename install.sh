@@ -82,30 +82,66 @@ distro_is() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 _remove_common() {
+    # Resolve the invoking user's home directory so we can remove user-level files.
+    local real_user="${SUDO_USER:-}"
+    local user_home=""
+    if [[ -n "$real_user" ]]; then
+        user_home="$(getent passwd "$real_user" | cut -d: -f6 2>/dev/null || true)"
+    fi
+
     step "Stopping services"
     for svc in tor dnscrypt-proxy i2pd; do
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            systemctl stop "$svc" && ok "Stopped $svc"
-        fi
+        systemctl stop "$svc" 2>/dev/null && ok "Stopped $svc" || true
     done
 
     # Stop and disable entropy-shield headless service if installed
-    if systemctl is-active --quiet entropy-shield 2>/dev/null; then
-        systemctl stop entropy-shield && ok "Stopped entropy-shield service"
-    fi
-    if systemctl is-enabled --quiet entropy-shield 2>/dev/null; then
-        systemctl disable entropy-shield && ok "Disabled entropy-shield service"
+    systemctl stop    entropy-shield 2>/dev/null || true
+    systemctl disable entropy-shield 2>/dev/null && ok "Disabled entropy-shield service" || true
+
+    step "Removing application files"
+    rm -rf "$DEST"
+    rm -f  "$WRAPPER" "$DESKTOP" "$POLKIT" "$ICON_SYS_PIX" "$ICON_SYS_HIC"
+    rm -f  "$SYSTEMD_SERVICE" "$SUDOERS_FILE"
+    ok "Application files removed."
+
+    step "Removing system-wide runtime / proxy files"
+    rm -f  /etc/profile.d/entropy-shield-proxy.sh
+    rm -f  /etc/fish/conf.d/entropy-shield-proxy.fish
+    rm -f  /run/systemd/resolved.conf.d/entropy-shield.conf
+    rm -rf /run/entropy-shield
+    ok "System-wide files removed."
+
+    step "Removing user files"
+    if [[ -n "$user_home" ]]; then
+        rm -f  "$user_home/.config/autostart/entropy-shield.desktop"
+        rm -rf "$user_home/.config/entropy-shield"
+        rm -f  "$user_home/.config/environment.d/entropy-shield-proxy.conf"
+        # Remove instance lock if present
+        local rt_dir
+        rt_dir="$(getent passwd "$real_user" | cut -d: -f6 2>/dev/null || echo "")"
+        local uid
+        uid="$(id -u "$real_user" 2>/dev/null || echo "")"
+        [[ -n "$uid" ]] && rm -f "/run/user/$uid/entropy-shield.lock" || true
+        ok "User files removed for $real_user."
+    else
+        warn "SUDO_USER not set — skipping user config cleanup."
+        warn "Manually remove if needed:"
+        warn "  ~/.config/autostart/entropy-shield.desktop"
+        warn "  ~/.config/entropy-shield/"
     fi
 
-    step "Removing files"
-    rm -rf  "$DEST"
-    rm -f   "$WRAPPER" "$DESKTOP" "$POLKIT" "$ICON_SYS_PIX" "$ICON_SYS_HIC"
-    rm -f   "$SYSTEMD_SERVICE"
-    rm -f   "$SUDOERS_FILE"    # passwordless mode sudoers entry
+    step "Restarting affected services"
+    # Restart systemd-resolved if it was stopped by entropy-shield
+    if systemctl is-enabled --quiet systemd-resolved 2>/dev/null && \
+       ! systemctl is-active  --quiet systemd-resolved 2>/dev/null; then
+        systemctl start systemd-resolved 2>/dev/null && ok "Restarted systemd-resolved." || true
+    fi
     systemctl daemon-reload 2>/dev/null || true
+
+    step "Updating desktop database"
     gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
     update-desktop-database /usr/share/applications 2>/dev/null || true
-    ok "Application files removed."
+    ok "Done."
 }
 
 do_uninstall() {
@@ -507,11 +543,15 @@ EOF
     ok "Desktop entry created."
 
     step "Creating polkit policy"
-    # The polkit action covers the privileged runner (core/privileged_runner.py),
-    # NOT main.py.  The GUI runs as a normal user and calls pkexec to launch the
-    # runner when the user clicks Connect or Disconnect.
+    # Detect the real python3 binary (may be versioned, e.g. /usr/bin/python3.13).
+    # pkexec matches exec.path against the ACTUAL binary, so we must use the
+    # real path — not a generic "python3" symlink — to avoid exit code 127.
+    PYTHON3_EXEC="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null \
+                   || readlink -f "$(which python3)" 2>/dev/null \
+                   || echo '/usr/bin/python3')"
+    info "Using python3 binary: $PYTHON3_EXEC"
     mkdir -p /usr/share/polkit-1/actions
-    cat > "$POLKIT" <<'EOF'
+    cat > "$POLKIT" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC
   "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
@@ -525,12 +565,12 @@ EOF
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/python3</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">${PYTHON3_EXEC}</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">/opt/entropy-shield/core/privileged_runner.py</annotate>
   </action>
 </policyconfig>
 EOF
-    ok "Polkit policy created."
+    ok "Polkit policy created (python3: ${PYTHON3_EXEC})."
 
     step "Installing systemd service (headless/server mode)"
     if [[ -f "$SCRIPT_DIR/entropy-shield.service" ]]; then

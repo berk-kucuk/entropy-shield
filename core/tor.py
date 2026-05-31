@@ -111,12 +111,39 @@ class TorManager:
         self._log(f"[TOR] Custom torrc → {_TORRC_PATH}")
 
     def start(self) -> None:
-        self._log("[TOR] Starting Tor…")
+        tor_bin = shutil.which("tor") or "tor"
+        self._log(f"[TOR] Starting Tor… ({tor_bin})")
+
+        # Validate torrc and surface early diagnostics.
+        try:
+            chk = subprocess.run(
+                [tor_bin, "--verify-config", "-f", _TORRC_PATH],
+                capture_output=True, text=True, timeout=15,
+            )
+            vc_out = (chk.stdout + chk.stderr).strip()
+            if vc_out:
+                for ln in vc_out.splitlines():
+                    if ln.strip():
+                        self._log(f"[TOR] {ln.strip()}")
+            if chk.returncode != 0:
+                raise RuntimeError(
+                    f"Tor config error (exit {chk.returncode}): "
+                    f"{vc_out or 'verify-config failed'}"
+                )
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"tor binary not found at '{tor_bin}'. Install the tor package.")
+        except subprocess.TimeoutExpired:
+            pass
+
+        # Check that required ports are free before binding.
+        self._check_ports()
+
         self._bootstrap_done = threading.Event()
         self._bootstrap_error = ""
 
         self._tor_proc = subprocess.Popen(
-            ["tor", "-f", _TORRC_PATH],
+            [tor_bin, "-f", _TORRC_PATH],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
@@ -131,8 +158,10 @@ class TorManager:
 
         if self._bootstrap_error:
             err = self._bootstrap_error
+            exit_code = self._tor_proc.poll() if self._tor_proc else None
             self._tor_proc = None
-            raise RuntimeError(f"Tor failed to start: {err}")
+            suffix = f" (exit code: {exit_code})" if exit_code is not None else ""
+            raise RuntimeError(f"Tor failed to start{suffix}: {err}")
 
         self._log("[TOR] Tor is running.")
 
@@ -305,10 +334,10 @@ class TorManager:
         """
         import signal as _signal
         lock_file = os.path.join(_DATA_DIR, "lock")
+        killed = False
         try:
             with open(lock_file) as f:
                 old_pid = int(f.read().strip())
-            # Verify the PID is actually a Tor process (not a recycled PID).
             try:
                 with open(f"/proc/{old_pid}/comm") as f:
                     comm = f.read().strip().lower()
@@ -319,16 +348,21 @@ class TorManager:
                         time.sleep(0.5)
                         os.kill(old_pid, _signal.SIGKILL)
                     except ProcessLookupError:
-                        pass  # Already exited after SIGTERM
+                        pass
+                    killed = True
             except (FileNotFoundError, ValueError):
-                pass  # PID no longer running or /proc entry gone
+                pass
         except (FileNotFoundError, ValueError):
-            pass  # Lock file absent or unreadable — nothing to do
-        # Always remove the lock file so Tor can start cleanly.
+            pass
         try:
             os.unlink(lock_file)
         except FileNotFoundError:
             pass
+
+        if not killed:
+            # Fallback: lock file may have been removed already but the process
+            # is still alive and holding our ports.  Find it via ss.
+            self._kill_tor_by_port(cfg().get("tor", "socks_port"), _signal)
 
     # ── stderr reader (daemon thread) ─────────────────────────────
 
@@ -344,16 +378,22 @@ class TorManager:
     )
 
     def _stderr_reader(self) -> None:
+        from collections import deque
         bootstrap_re = re.compile(r"Bootstrapped (\d+)%")
         proc = self._tor_proc  # local reference — safe if tor_proc is reset later
         last_pct = -1
         last_err = ""
+        recent: deque = deque(maxlen=40)  # keep last 40 lines for failure diagnosis
         try:
             for raw in proc.stderr:
                 line = raw.decode(errors="replace").strip()
+                if not line:
+                    continue
+                recent.append(line)
                 low = line.lower()
                 if any(p in low for p in self._FATAL_PATTERNS):
                     last_err = line
+                    self._log(f"[TOR] {line}")  # surface fatal lines immediately
                 m = bootstrap_re.search(line)
                 if m:
                     pct = int(m.group(1))
@@ -368,6 +408,9 @@ class TorManager:
 
         # Pipe closed — tor exited or was stopped.
         if self._bootstrap_done and not self._bootstrap_done.is_set():
+            # Log all collected output so the user can see the actual error.
+            for ln in recent:
+                self._log(f"[TOR] {ln}")
             self._bootstrap_error = last_err or "Tor process ended unexpectedly."
             self._bootstrap_done.set()
 
@@ -418,6 +461,56 @@ class TorManager:
 
         subprocess.run(["systemctl", "reload", "systemd-resolved"], capture_output=True)
         self._log("[TOR] DNS settings reverted to system defaults.")
+
+    def _kill_tor_by_port(self, port: int, _signal_mod) -> None:
+        """Kill any 'tor' process that is listening on *port* (ss-based fallback)."""
+        import re as _re
+        try:
+            r = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{port}"],
+                capture_output=True, text=True, timeout=3,
+            )
+            for line in r.stdout.splitlines():
+                if "tor" not in line.lower():
+                    continue
+                m = _re.search(r"pid=(\d+)", line)
+                if not m:
+                    continue
+                pid = int(m.group(1))
+                self._log(f"[TOR] Killing orphaned Tor by port :{port} (PID {pid})…")
+                try:
+                    os.kill(pid, _signal_mod.SIGTERM)
+                    time.sleep(0.5)
+                    os.kill(pid, _signal_mod.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        except Exception:
+            pass
+
+    # ── port / data-dir diagnostics ──────────────────────────────
+
+    def _check_ports(self) -> None:
+        """Raise RuntimeError listing any Tor ports that are already in use."""
+        import socket as _sock
+        ports = {
+            "TransPort":   cfg().get("tor", "trans_port"),
+            "DNSPort":     cfg().get("tor", "dns_port"),
+            "SocksPort":   cfg().get("tor", "socks_port"),
+            "ControlPort": cfg().get("tor", "control_port"),
+        }
+        busy = []
+        for name, port in ports.items():
+            try:
+                s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+                s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", int(port)))
+                s.close()
+            except OSError:
+                busy.append(f"{name} :{port}")
+        if busy:
+            raise RuntimeError(
+                f"Port(s) already in use — cannot start Tor: {', '.join(busy)}. "
+                "Run 'sudo ss -tlnp' to see which process is holding them.")
 
     # ── helpers ───────────────────────────────────────────────────
 

@@ -21,7 +21,7 @@ _DEFAULTS: dict = {
         "lines":     [],        # list of "Bridge ..." strings
     },
     "dnscrypt": {
-        "port":              5353,
+        "port":              5380,  # 5353 is reserved for mDNS (avahi-daemon)
         "require_dnssec":    False,
         "require_nolog":     True,
         "require_nofilter":  True,
