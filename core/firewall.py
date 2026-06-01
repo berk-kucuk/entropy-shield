@@ -39,9 +39,30 @@ _TOR_LOCAL_NETS = [
 
 _NFT_TABLE = "entropy-shield"
 
+# Known DNS-over-HTTPS resolver IPs. Blocked in DNSCrypt-only mode so apps
+# cannot bypass DNSCrypt by hardcoding their own DoH endpoint.
+# (In Tor mode, all TCP is already redirected through TransPort — no need
+# to block individually.)
+_DOH_IPS = [
+    # Google
+    "8.8.8.8", "8.8.4.4",
+    # Cloudflare
+    "1.1.1.1", "1.0.0.1",
+    # Quad9
+    "9.9.9.9", "149.112.112.112",
+    # AdGuard
+    "94.140.14.14", "94.140.15.15",
+    # OpenDNS
+    "208.67.222.222", "208.67.220.220",
+    # CleanBrowsing
+    "185.228.168.168", "185.228.169.168",
+]
+
 
 def _resolve_uid(uid_or_user: str) -> str | None:
     """Resolve a username or numeric UID string to a numeric UID string."""
+    if not uid_or_user:
+        return None
     if uid_or_user.isdigit():
         return uid_or_user
     r = subprocess.run(["id", "-u", uid_or_user], capture_output=True, text=True)
@@ -183,6 +204,13 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
                   "        type filter hook output priority 0 ;"]
         if tor_uid:
             lines.append(f"        meta skuid {tor_uid} return")
+        # Per-app: bypass UIDs go direct (allow all protocols incl. UDP).
+        # Block UIDs are fully isolated here before any other rule.
+        bypass_f, block_f = _per_app_rules()
+        for uid in bypass_f:
+            lines.append(f"        meta skuid {uid} return")
+        for uid in block_f:
+            lines.append(f"        meta skuid {uid} drop")
         for net in _TOR_LOCAL_NETS:
             lines.append(f"        ip daddr {net} return")
         lines += [
@@ -203,6 +231,21 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
             "        udp dport 53 drop",
             "        tcp dport 53 drop",
             "        meta l4proto != tcp drop",   # drop UDP, ICMP, SCTP, etc.
+            "    }",
+        ]
+
+    # ── DNSCrypt-only: DoH blocking filter chain ─────────────
+    # When only DNSCrypt is active (no Tor), apps can bypass DNSCrypt by
+    # hardcoding a DoH endpoint (port 443, known resolver IPs).  Block
+    # those IPs so all DNS resolving goes through dnscrypt-proxy.
+    # (In Tor mode, all TCP already goes through TransPort — no need here.)
+    dns_only = use_dnscrypt and not use_tor and not i2p_only
+    if dns_only and cfg().get("doh_block"):
+        doh_set = ", ".join(_DOH_IPS)
+        lines += [
+            "    chain filter_output {",
+            "        type filter hook output priority 0 ;",
+            f"        ip daddr {{ {doh_set} }} tcp dport 443 drop",
             "    }",
         ]
 
@@ -465,6 +508,11 @@ class FirewallManager:
             if uid:
                 self._ipt_add("-t", "nat", "-A", "OUTPUT",
                                "-m", "owner", "--uid-owner", uid, "-j", "RETURN")
+            # Per-app routing: bypass UIDs skip TransPort (direct internet).
+            bypass_uids, block_uids = _per_app_rules()
+            for b_uid in bypass_uids:
+                self._ipt_add("-t", "nat", "-A", "OUTPUT",
+                               "-m", "owner", "--uid-owner", b_uid, "-j", "RETURN")
             # DNS redirect before local-net exclusion so queries to 127.0.0.1:53
             # are caught and sent to Tor's DNSPort.
             dns_target = str(dns_port) if use_dnscrypt else str(tor_dns)
@@ -487,6 +535,14 @@ class FirewallManager:
             if uid:
                 self._ipt_add("-t", "filter", "-A", "OUTPUT",
                                "-m", "owner", "--uid-owner", uid, "-j", "ACCEPT")
+            # Per-app: bypass UIDs allowed all protocols (direct internet).
+            # Block UIDs fully isolated before local-net accepts.
+            for b_uid in bypass_uids:
+                self._ipt_add("-t", "filter", "-A", "OUTPUT",
+                               "-m", "owner", "--uid-owner", b_uid, "-j", "ACCEPT")
+            for b_uid in block_uids:
+                self._ipt_add("-t", "filter", "-A", "OUTPUT",
+                               "-m", "owner", "--uid-owner", b_uid, "-j", "DROP")
             for net in _TOR_LOCAL_NETS:
                 self._ipt_add("-t", "filter", "-A", "OUTPUT", "-d", net, "-j", "ACCEPT")
             self._ipt_add("-t", "filter", "-A", "OUTPUT",
@@ -521,6 +577,13 @@ class FirewallManager:
             self._ip6t_add("-t", "nat", "-A", "OUTPUT",
                             "-p", "tcp", "--dport", "53",
                             "-j", "REDIRECT", "--to-ports", str(dns_port))
+            # Block DoH in DNSCrypt-only mode (no Tor) so apps can't bypass
+            # dnscrypt-proxy by hardcoding a DoH resolver on port 443.
+            if not use_tor and cfg().get("doh_block"):
+                for doh_ip in _DOH_IPS:
+                    self._ipt_add("-t", "filter", "-A", "OUTPUT",
+                                   "-p", "tcp", "--dport", "443",
+                                   "-d", doh_ip, "-j", "DROP")
 
         if i2p_only:
             i2pd_uid = _i2pd_uid()
@@ -720,8 +783,21 @@ class FirewallManager:
         self._set_gnome_tor_proxy(pw, enable, socks_url)
         self._set_kde_tor_proxy(pw, enable, socks_url)
         self._set_xfce_tor_proxy(pw, enable, socks_url)
-        self._set_env_tor_proxy(pw, enable, socks5h_url)
         self._set_profile_d_proxy(enable, socks5h_url)
+        # Clean up any environment.d file written by older versions.
+        # We no longer use systemctl --user set-environment because it injects
+        # proxy vars into every running GUI process (Spotify, Electron apps, etc.).
+        env_file = os.path.join(pw.pw_dir, ".config", "environment.d",
+                                "entropy-shield-proxy.conf")
+        if not enable:
+            for var in ("ALL_PROXY", "all_proxy", "SOCKS_PROXY", "socks_proxy",
+                        "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+                        "NO_PROXY", "no_proxy"):
+                self._user_systemctl(pw, "unset-environment", var)
+        try:
+            os.unlink(env_file)
+        except FileNotFoundError:
+            pass
 
     def _set_gnome_tor_proxy(self, pw: pwd.struct_passwd,
                              enable: bool, socks_url: str) -> None:
@@ -800,53 +876,6 @@ class FirewallManager:
             self._user_run(pw, [
                 "xfconf-query", "-c", ch, "-p", "/Net/ProxyMode", "-s", "0"
             ])
-
-    def _set_env_tor_proxy(self, pw: pwd.struct_passwd,
-                           enable: bool, socks_url: str) -> None:
-        """Universal fallback: systemd user-session env vars + persistent env file.
-
-        socks_url is expected to use the socks5h:// scheme so that hostname
-        resolution is delegated to Tor (required for .onion addresses).
-        """
-        _PROXY_VARS = [
-            "ALL_PROXY", "all_proxy",
-            "SOCKS_PROXY", "socks_proxy",
-            # Some tools (Python requests, httpx) only honour http(s)_proxy.
-            "HTTP_PROXY", "http_proxy",
-            "HTTPS_PROXY", "https_proxy",
-        ]
-        _NO_PROXY_VAL = "localhost,127.0.0.1,127.0.0.0/8,::1"
-        env_dir  = os.path.join(pw.pw_dir, ".config", "environment.d")
-        env_file = os.path.join(env_dir, "entropy-shield-proxy.conf")
-
-        if enable:
-            # 1. Propagate to the live systemd user session so any process
-            #    spawned from now on inherits the variable.
-            for var in _PROXY_VARS:
-                self._user_systemctl(pw, "set-environment", f"{var}={socks_url}")
-            # NO_PROXY uses a different value (bypass list, not the proxy URL).
-            for var in ("NO_PROXY", "no_proxy"):
-                self._user_systemctl(pw, "set-environment", f"{var}={_NO_PROXY_VAL}")
-
-            # 2. Persist across reboots / new logins.
-            try:
-                os.makedirs(env_dir, exist_ok=True)
-                with open(env_file, "w") as f:
-                    for var in _PROXY_VARS:
-                        f.write(f"{var}={socks_url}\n")
-                    f.write(f"NO_PROXY={_NO_PROXY_VAL}\n")
-                    f.write(f"no_proxy={_NO_PROXY_VAL}\n")
-                os.chown(env_file, pw.pw_uid, pw.pw_gid)
-            except Exception:
-                pass
-        else:
-            # Unset all proxy vars and NO_PROXY from the live systemd user session.
-            for var in _PROXY_VARS + ["NO_PROXY", "no_proxy"]:
-                self._user_systemctl(pw, "unset-environment", var)
-            try:
-                os.unlink(env_file)
-            except FileNotFoundError:
-                pass
 
     # ── /etc/profile.d — system-wide shell env ────────────────────
 

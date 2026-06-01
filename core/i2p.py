@@ -124,7 +124,7 @@ class I2PManager:
             + bw_note
         )
 
-    def start(self) -> None:
+    def start(self, transparent: bool = True) -> None:
         self._log("[I2P] Starting i2pd...")
         r = subprocess.run(["systemctl", "restart", "i2pd"],
                            capture_output=True, text=True)
@@ -133,14 +133,15 @@ class I2PManager:
         self._wait_active("i2pd", timeout=15)
         self._log("[I2P] i2pd active.")
 
-        if shutil.which("redsocks"):
+        if transparent and shutil.which("redsocks"):
             self._start_redsocks()
         else:
             self._transparent = False
-            self._log(
-                "[I2P] redsocks not installed — running in proxy-only mode. "
-                "Install redsocks (paru -S redsocks) for full transparent routing."
-            )
+            if transparent:
+                self._log(
+                    "[I2P] redsocks not installed — running in proxy-only mode. "
+                    "Install redsocks (paru -S redsocks) for full transparent routing."
+                )
 
     def stop(self) -> None:
         self._stop_redsocks()

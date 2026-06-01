@@ -325,9 +325,9 @@ def _run_headless() -> None:
 
     _log("[HEADLESS] Entropy Shield headless mode starting…")
 
-    c = cfg().all()
+    import shutil as _shutil
     use_tor      = True   # headless always uses Tor for protection
-    use_dnscrypt = bool(c.get("dnscrypt", {}).get("port"))  # if configured
+    use_dnscrypt = bool(_shutil.which("dnscrypt-proxy"))
     use_i2p      = False
 
     mgr = ConnectionManager(_log)

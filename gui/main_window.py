@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QSizePolicy,
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer, QPoint, QRectF,
+    Qt, QThread, pyqtSignal, QTimer, QPoint, QPointF, QRectF,
 )
 from PyQt6.QtGui import (
     QTextCursor, QPainter, QColor, QPen, QIcon, QPixmap,
@@ -26,7 +26,7 @@ from PyQt6.QtGui import (
 
 import gui.themes as themes
 from gui.themes import current as theme, build_qss
-from gui.widgets import ServiceCard, Spinner, StatusRing, NetSpeedBar
+from gui.widgets import ServiceCard, Spinner, StatusRing, NetSpeedGraph
 from gui.settings_panel import SettingsPanel
 from core.config import cfg
 from core.updater import VERSION
@@ -113,15 +113,61 @@ _BINARY_CHARS = [
     (_rng.random(), _rng.random(), _rng.choice("01"), _rng.uniform(0, 2 * math.pi))
     for _ in range(160)
 ]
-_CIRCUIT_NODES = [
-    (_rng.random(), _rng.random(), _rng.uniform(0, 2 * math.pi))
-    for _ in range(24)
-]
 _PIXEL_BLOCKS = [
     (_rng.random(), _rng.random(), _rng.randint(0, 2), _rng.uniform(0, 2 * math.pi))
     for _ in range(80)
 ]
 del _rng
+
+# ── Circuit theme: CPU + data-path layout ─────────────────────
+# The "CPU" is centred at (_CPU_CX, _CPU_CY) as fractions of the
+# widget size.  Twelve orthogonal PCB traces radiate outward from
+# the four chip edges.  Each trace is a list of (x_frac, y_frac)
+# waypoints; consecutive pairs form horizontal or vertical segments.
+_CPU_CX, _CPU_CY = 0.50, 0.20   # chip centre
+_CPU_HW, _CPU_HH = 0.080, 0.080  # half-widths (fractions)
+
+# Orthogonal PCB traces radiating from the four chip edges.
+# Each entry is a list of (x_frac, y_frac) waypoints; adjacent
+# pairs form horizontal or vertical segments — no diagonals.
+# Traces are grouped in parallel "bus" bundles (3 per side) with
+# deliberate spacing so the routing reads as organised data buses.
+_CPU_TRACES = [
+    # ══ right bus ════════════════════════════════════════════
+    # Bus R-A: exits top-right, turns down, exits right edge
+    [(0.580, 0.170), (0.720, 0.170), (0.720, 0.095), (0.960, 0.095)],
+    # Bus R-B: exits mid-right, turns down into lower-right quadrant
+    [(0.580, 0.210), (0.820, 0.210), (0.820, 0.400), (0.960, 0.400)],
+    # Bus R-C: long run — exits lower-right, two bends, bottom-right corner
+    [(0.580, 0.250), (0.660, 0.250), (0.660, 0.520),
+     (0.860, 0.520), (0.860, 0.780)],
+
+    # ══ left bus ════════════════════════════════════════════
+    # Bus L-A: exits top-left, turns up, exits left edge
+    [(0.420, 0.170), (0.280, 0.170), (0.280, 0.090), (0.040, 0.090)],
+    # Bus L-B: exits mid-left, turns down into lower-left
+    [(0.420, 0.210), (0.160, 0.210), (0.160, 0.440), (0.040, 0.440)],
+    # Bus L-C: long run — two bends, bottom-left corner
+    [(0.420, 0.250), (0.340, 0.250), (0.340, 0.580),
+     (0.130, 0.580), (0.130, 0.840)],
+
+    # ══ bottom bus ══════════════════════════════════════════
+    # Bus B-A: exits lower-left, turns left, exits bottom
+    [(0.450, 0.280), (0.450, 0.490), (0.240, 0.490), (0.240, 0.960)],
+    # Bus B-B: exits straight down, turns right, exits bottom-right
+    [(0.500, 0.280), (0.500, 0.660), (0.640, 0.660), (0.640, 0.960)],
+    # Bus B-C: exits lower-right, two bends toward right edge
+    [(0.550, 0.280), (0.550, 0.430), (0.780, 0.430),
+     (0.780, 0.710), (0.960, 0.710)],
+
+    # ══ top bus ═════════════════════════════════════════════
+    # Bus T-A: exits top-left, turns left, exits left edge
+    [(0.450, 0.120), (0.450, 0.048), (0.140, 0.048)],
+    # Bus T-B: exits straight up, turns right, exits top edge
+    [(0.500, 0.120), (0.500, 0.026), (0.860, 0.026), (0.960, 0.026)],
+    # Bus T-C: exits top-right, two bends along right side
+    [(0.550, 0.120), (0.550, 0.058), (0.940, 0.058), (0.940, 0.180)],
+]
 
 
 _GLOW_FALLBACK = {
@@ -253,6 +299,7 @@ class _Worker(QThread):
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()
 
 
 # ── Panic worker ─────────────────────────────────────────────
@@ -287,11 +334,14 @@ class _PanicWorker(QThread):
             except Exception as exc:
                 msgs.append(f"[PANIC] Error: {exc}")
         else:
-            # Runner not running — clean up firewall directly (nft is fast)
-            subprocess.run(["nft", "delete", "table", "ip",  "entropy-shield"],
-                           capture_output=True)
-            subprocess.run(["nft", "delete", "table", "ip6", "entropy-shield"],
-                           capture_output=True)
+            # Runner not running — cannot remove firewall rules without root.
+            # The next runner launch (on reconnect) runs _startup_heal() which
+            # removes stale nftables tables automatically.
+            msgs.append(
+                "[PANIC] WARNING: Privileged process unavailable — "
+                "firewall rules may still be active. "
+                "Click CONNECT to trigger automatic cleanup on next startup."
+            )
 
         self.done.emit("\n".join(msgs))
 
@@ -328,11 +378,37 @@ class _HealthCheckWorker(QThread):
         except Exception:
             return ""
 
+    @staticmethod
+    def _tor_socks_alive(port: int) -> bool:
+        """Return True if Tor's SocksPort is accepting TCP connections."""
+        import socket as _sock
+        try:
+            s = _sock.create_connection(("127.0.0.1", port), timeout=2)
+            s.close()
+            return True
+        except OSError:
+            return False
+
     def run(self) -> None:
         import time
         if not self._runner_alive:
             self.dropped.emit("__runner__", "Runner process exited.")
             return
+
+        # Tor runs as a managed subprocess (not a systemd service) so we
+        # detect crashes by probing its SocksPort directly.
+        if "tor" in self._active_layers:
+            from core.config import cfg as _cfg
+            socks_port = _cfg().get("tor", "socks_port")
+            if not self._tor_socks_alive(socks_port):
+                time.sleep(3)
+                if not self._tor_socks_alive(socks_port):
+                    self.dropped.emit(
+                        "tor",
+                        f"Tor SocksPort :{socks_port} is unreachable — process may have crashed.",
+                    )
+                    return
+
         for layer, service in _SERVICE_MAP.items():
             if layer not in self._active_layers:
                 continue
@@ -540,38 +616,132 @@ class _GlowFrame(QWidget):
             p.drawText(int(nx * w), int(ny * h), ch)
 
     def _draw_circuit_bg(self, p: QPainter, w: float, h: float) -> None:
-        spacing = 36
-        p.setPen(QPen(QColor(180, 180, 190, 10), 1))
-        x = 0
-        while x <= w:
-            p.drawLine(int(x), 0, int(x), int(h))
-            x += spacing
-        y = 0
-        while y <= h:
-            p.drawLine(0, int(y), int(w), int(y))
-            y += spacing
+        """PCB-style background: CPU chip + thick orthogonal data-bus traces.
 
-        for nx, ny, ph in _CIRCUIT_NODES:
-            gx = round(nx * w / spacing) * spacing
-            gy = round(ny * h / spacing) * spacing
-            t  = (math.sin(self._blob_phase + ph) + 1) / 2
-            a  = int(30 + 95 * t)
-            sz = 2.5 + t * 4.0
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(200, 200, 210, a))
-            p.drawEllipse(int(gx - sz), int(gy - sz), int(sz * 2), int(sz * 2))
+        Three visual layers:
+          1. Static traces — thick lines + large via pads, always visible.
+          2. CPU chip outline — faint square behind the StatusRing widget.
+          3. Animated pulses — bright data packets flowing along each trace
+             (only when glow_state is "on" or "connecting").
+        """
+        # ── scale waypoints ───────────────────────────────────
+        all_pts = [
+            [(xf * w, yf * h) for xf, yf in trace]
+            for trace in _CPU_TRACES
+        ]
 
-        p.setPen(QPen(QColor(190, 190, 200, 20), 1))
+        # ── background dot matrix (very subtle PCB texture) ───
+        dot_sp = 28.0
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(190, 202, 218, 12))
+        xd = dot_sp / 2
+        while xd < w:
+            yd = dot_sp / 2
+            while yd < h:
+                p.drawEllipse(QRectF(xd - 0.8, yd - 0.8, 1.6, 1.6))
+                yd += dot_sp
+            xd += dot_sp
+
+        # ── static trace lines (thick) ────────────────────────
         p.setBrush(Qt.BrushStyle.NoBrush)
-        nodes = _CIRCUIT_NODES
-        for i in range(0, len(nodes) - 1, 2):
-            ax = round(nodes[i][0]   * w / spacing) * spacing
-            ay = round(nodes[i][1]   * h / spacing) * spacing
-            bx = round(nodes[i+1][0] * w / spacing) * spacing
-            by = round(nodes[i+1][1] * h / spacing) * spacing
-            mx = ax if abs(ax - bx) > abs(ay - by) else bx
-            p.drawLine(int(ax), int(ay), int(mx), int(ay))
-            p.drawLine(int(mx), int(ay), int(bx), int(by))
+
+        # Group traces into 4 buses (3 per side); each bus gets a
+        # slightly different shade to give visual hierarchy.
+        bus_alpha = [52, 44, 36,   52, 44, 36,   52, 44, 36,   52, 44, 36]
+        for ti, pts in enumerate(all_pts):
+            a   = bus_alpha[ti % len(bus_alpha)]
+            col = QColor(195, 208, 225, a)
+            p.setPen(QPen(col, 2.2,
+                          Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap,
+                          Qt.PenJoinStyle.RoundJoin))
+            for i in range(len(pts) - 1):
+                p.drawLine(QPointF(pts[i][0], pts[i][1]),
+                           QPointF(pts[i+1][0], pts[i+1][1]))
+
+        # ── via pads at every waypoint ────────────────────────
+        via_r = 4.0
+        for ti, pts in enumerate(all_pts):
+            via_a = bus_alpha[ti % len(bus_alpha)] + 28
+            p.setPen(QPen(QColor(195, 208, 225, via_a), 0.8))
+            p.setBrush(QColor(195, 208, 225, via_a - 12))
+            for px, py in pts:
+                p.drawEllipse(QRectF(px - via_r, py - via_r,
+                                     via_r * 2, via_r * 2))
+
+        # ── CPU chip outline (behind StatusRing) ──────────────
+        cx_px = w * _CPU_CX
+        cy_px = h * _CPU_CY
+        cw    = w * _CPU_HW * 2
+        ch    = h * _CPU_HH * 2
+
+        # Outer chip body
+        p.setPen(QPen(QColor(195, 208, 225, 52), 1.2))
+        p.setBrush(QColor(195, 208, 225, 8))
+        p.drawRoundedRect(QRectF(cx_px - cw/2, cy_px - ch/2, cw, ch), 4, 4)
+
+        # Inner die
+        dm = cw * 0.17
+        p.setPen(QPen(QColor(195, 208, 225, 30), 0.7))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(QRectF(cx_px - cw/2 + dm, cy_px - ch/2 + dm,
+                          cw - 2*dm, ch - 2*dm))
+
+        # Connector pads where traces touch the chip boundary
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(205, 218, 235, 72))
+        for trace in _CPU_TRACES:
+            tx, ty = trace[0][0] * w, trace[0][1] * h
+            p.drawRect(QRectF(tx - 3.2, ty - 3.2, 6.4, 6.4))
+
+        # ── animated data-packet pulses ───────────────────────
+        if self._glow_state not in ("on", "connecting"):
+            return
+
+        phase      = self._blob_phase
+        cr, cg, cb = self._rgb
+        n_traces   = len(_CPU_TRACES)
+
+        for ti, pts in enumerate(all_pts):
+            seg_lens = [
+                math.hypot(pts[j+1][0] - pts[j][0],
+                           pts[j+1][1] - pts[j][1])
+                for j in range(len(pts) - 1)
+            ]
+            total = sum(seg_lens)
+            if total < 1.0:
+                continue
+
+            # Each trace has a unique phase offset so packets are staggered
+            t    = ((phase / (2 * math.pi)) + ti / n_traces) % 1.0
+            dist = t * total
+
+            # Find pixel position at `dist` along the trace
+            cum        = 0.0
+            px_f, py_f = pts[0]
+            for j, seg_l in enumerate(seg_lens):
+                if cum + seg_l >= dist:
+                    frac   = (dist - cum) / seg_l if seg_l > 0 else 0.0
+                    px_f   = pts[j][0] + (pts[j+1][0] - pts[j][0]) * frac
+                    py_f   = pts[j][1] + (pts[j+1][1] - pts[j][1]) * frac
+                    break
+                cum += seg_l
+            else:
+                px_f, py_f = pts[-1]
+
+            # Glow halo + bright white core
+            bright = 0.55 + 0.45 * math.sin(phase + ti * 0.88)
+            p.setPen(Qt.PenStyle.NoPen)
+            for ring in range(9, 0, -1):
+                a    = int(190 * bright * ((9 - ring + 1) / 9) ** 2.2)
+                r_sz = ring * 1.55
+                p.setBrush(QColor(cr, cg, cb, a))
+                p.drawEllipse(QRectF(px_f - r_sz, py_f - r_sz,
+                                     r_sz * 2, r_sz * 2))
+            # Bright near-white core
+            core_a = int(240 * bright)
+            p.setBrush(QColor(235, 245, 255, core_a))
+            p.drawEllipse(QRectF(px_f - 2.2, py_f - 2.2, 4.4, 4.4))
 
     def _draw_pixel_bg(self, p: QPainter, w: float, h: float) -> None:
         cell = 20  # Minecraft-sized pixel blocks, snapped to grid
@@ -975,7 +1145,7 @@ class MainWindow(QMainWindow):
         self._status_sub.setObjectName("statusSub")
         self._status_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._speed_bar = NetSpeedBar()
+        self._speed_bar = NetSpeedGraph()
 
         col.addLayout(ring_row)
         col.addWidget(self._status_lbl)
@@ -1041,8 +1211,19 @@ class MainWindow(QMainWindow):
             "Isolated browser routed through I2P.\nSupports Firefox, Chromium, Brave.")
         self._i2p_browser_btn.clicked.connect(self._on_open_i2p_browser)
 
+        self._proxy_terminal_btn = QPushButton("PROXY TERMINAL")
+        self._proxy_terminal_btn.setObjectName("proxyTerminalBtn")
+        self._proxy_terminal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._proxy_terminal_btn.setEnabled(False)
+        self._proxy_terminal_btn.setToolTip(
+            "Open a terminal with Tor proxy env vars pre-set.\n"
+            "curl http://abc.onion works in this terminal.\n"
+            "No system-wide files are modified.")
+        self._proxy_terminal_btn.clicked.connect(self._on_open_proxy_terminal)
+
         lay.addWidget(self._tor_browser_btn)
         lay.addWidget(self._i2p_browser_btn)
+        lay.addWidget(self._proxy_terminal_btn)
         return w
 
     def _build_log(self) -> QWidget:
@@ -1246,6 +1427,7 @@ class MainWindow(QMainWindow):
             tor_on = "tor" in self._active_layers
             self._tor_browser_btn.setEnabled(tor_on)
             self._i2p_browser_btn.setEnabled("i2p" in self._active_layers)
+            self._proxy_terminal_btn.setEnabled(tor_on)
             self._ip_check_btn.setEnabled(tor_on)
             self._new_circuit_btn.setEnabled(tor_on)
             self._leak_test_btn.setEnabled(True)
@@ -1296,6 +1478,7 @@ class MainWindow(QMainWindow):
                 card.set_status("")
             self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
+            self._proxy_terminal_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
             self._new_circuit_btn.setEnabled(False)
             self._leak_test_btn.setEnabled(False)
@@ -1315,6 +1498,7 @@ class MainWindow(QMainWindow):
                 card.set_status("error" if card.is_checked else "")
             self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
+            self._proxy_terminal_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
             self._new_circuit_btn.setEnabled(False)
             self._leak_test_btn.setEnabled(False)
@@ -1363,9 +1547,13 @@ class MainWindow(QMainWindow):
                 card.set_status("")
             self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
+            self._proxy_terminal_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
             self._new_circuit_btn.setEnabled(False)
+            self._leak_test_btn.setEnabled(False)
             self._speed_bar.set_active(False)
+            self._status_timer.stop()
+            self._circuit_timer.stop()
             self._tray_send("disconnected")
         else:
             self._append_log(
@@ -1477,9 +1665,13 @@ class MainWindow(QMainWindow):
 
     def _refresh_circuit_info(self) -> None:
         # Skip if any worker is active — avoids stdout race during connect/disconnect.
+        # Also skip if new_circuit is in progress: both workers read the same stdout
+        # pipe and interleaved reads would corrupt both responses.
         if not self._connected or not self._runner_proc or self._worker is not None:
             return
         if self._circuit_worker and self._circuit_worker.isRunning():
+            return
+        if self._nc_worker and self._nc_worker.isRunning():
             return
         self._circuit_worker = _CircuitInfoWorker(self._runner_proc)
         self._circuit_worker.result.connect(self._on_circuit_info)
@@ -1538,6 +1730,7 @@ class MainWindow(QMainWindow):
             card.set_status("")
         self._tor_browser_btn.setEnabled(False)
         self._i2p_browser_btn.setEnabled(False)
+        self._proxy_terminal_btn.setEnabled(False)
         self._ip_check_btn.setEnabled(False)
         self._new_circuit_btn.setEnabled(False)
         self._leak_test_btn.setEnabled(False)
@@ -1600,6 +1793,9 @@ class MainWindow(QMainWindow):
     def _on_new_circuit(self) -> None:
         if self._nc_worker and self._nc_worker.isRunning():
             return
+        # Also block if circuit_info is in flight — both read the same stdout pipe.
+        if self._circuit_worker and self._circuit_worker.isRunning():
+            return
         if not self._runner_proc or self._runner_proc.poll() is not None:
             self._append_log("[!] Privileged process is not running — cannot renew circuit.")
             return
@@ -1650,6 +1846,17 @@ class MainWindow(QMainWindow):
         finally:
             QTimer.singleShot(3000, lambda: self._i2p_browser_btn.setEnabled(
                 self._connected and "i2p" in self._active_layers))
+
+    def _on_open_proxy_terminal(self) -> None:
+        self._proxy_terminal_btn.setEnabled(False)
+        try:
+            browser.launch_proxy_terminal(
+                cfg().get("tor", "socks_port"), self._append_log)
+        except Exception as exc:
+            self._append_log(f"[TERMINAL] {exc}")
+        finally:
+            QTimer.singleShot(3000, lambda: self._proxy_terminal_btn.setEnabled(
+                self._connected and "tor" in self._active_layers))
 
     # ── helpers ───────────────────────────────────────────────
 

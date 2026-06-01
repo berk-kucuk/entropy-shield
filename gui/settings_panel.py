@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QApplication, QSizePolicy, QFileDialog, QMessageBox, QComboBox,
 )
 from PyQt6.QtCore import (
-    Qt, QRect, QPropertyAnimation, QEasingCurve, pyqtSignal,
+    Qt, QRect, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
     pyqtProperty,
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient
@@ -29,7 +29,7 @@ _SUDOERS_FILE = "/etc/sudoers.d/entropy-shield"
 def _nopasswd_active() -> bool:
     return os.path.exists(_SUDOERS_FILE)
 
-_PANEL_W = 430
+_MARGIN = 14   # equal margin on all four sides of the settings card
 
 
 # ──────────────────────────────────────────────────────────────
@@ -47,7 +47,8 @@ class SettingsPanel(QWidget):
 
         self._card = QFrame(self)
         self._card.setObjectName("settingsCard")
-        self._card.setGeometry(self.width(), 0, _PANEL_W, self.height())
+        # Start off-screen to the right; real geometry set in open()
+        self._card.setGeometry(self.width(), 0, self.width(), self.height())
 
         card_lay = QVBoxLayout(self._card)
         card_lay.setContentsMargins(0, 0, 0, 0)
@@ -63,26 +64,32 @@ class SettingsPanel(QWidget):
 
         self.hide()
 
+    def _card_rect(self) -> QRect:
+        """Card geometry with equal margins on all sides."""
+        m = _MARGIN
+        return QRect(m, m, self.width() - 2 * m, self.height() - 2 * m)
+
     # ── public ────────────────────────────────────────────────
 
     def open(self) -> None:
         self.setGeometry(self.parent().rect())
-        self._card.setGeometry(self.width(), 14, _PANEL_W, self.height() - 28)
+        dest = self._card_rect()
+        # Start the card off to the right (slide-in animation)
+        self._card.setGeometry(self.width(), dest.y(), dest.width(), dest.height())
         self._populate()
         self.show()
         self.raise_()
 
-        end = QRect(self.width() - _PANEL_W - 14, 14, _PANEL_W, self.height() - 28)
         self._anim.setStartValue(self._card.geometry())
-        self._anim.setEndValue(end)
+        self._anim.setEndValue(dest)
         self._anim.start()
 
     def close_panel(self) -> None:
-        start = self._card.geometry()
-        end   = QRect(self.width(), 14, _PANEL_W, self.height() - 28)
+        dest = self._card_rect()
+        off  = QRect(self.width(), dest.y(), dest.width(), dest.height())
         self._anim.stop()
-        self._anim.setStartValue(start)
-        self._anim.setEndValue(end)
+        self._anim.setStartValue(self._card.geometry())
+        self._anim.setEndValue(off)
         try:
             self._anim.finished.disconnect(self._on_close_done)
         except (TypeError, RuntimeError):
@@ -396,6 +403,8 @@ class SettingsPanel(QWidget):
         self._reconnect_delay       = self._spinbox(lo=5, hi=120)
         self._reconnect_delay.setFixedWidth(80)
         self._update_check_toggle   = ToggleSwitch(checked=True)
+        self._mac_toggle            = ToggleSwitch(checked=False)
+        self._doh_block_toggle      = ToggleSwitch(checked=True)
 
         self._auth_btn = QPushButton()
         self._auth_btn.setObjectName("closeBtn")
@@ -414,6 +423,10 @@ class SettingsPanel(QWidget):
         lay.addLayout(self._row("Reconnect Delay",  self._reconnect_delay))
         lay.addLayout(self._row("Update Check",     self._update_check_toggle))
         lay.addSpacing(8)
+        lay.addWidget(self._section("PRIVACY"))
+        lay.addLayout(self._row("MAC Randomize",    self._mac_toggle))
+        lay.addLayout(self._row("Block DoH",        self._doh_block_toggle))
+        lay.addSpacing(8)
         lay.addWidget(self._section("PRIVILEGE"))
         lay.addLayout(self._row("Auth Mode", self._auth_btn))
 
@@ -423,6 +436,10 @@ class SettingsPanel(QWidget):
             "reconnect after the configured delay.\n\n"
             "Update Check: check GitHub Releases for a newer version\n"
             "once per session (no telemetry, HTTPS only).\n\n"
+            "MAC Randomize: randomize interface MAC address on connect,\n"
+            "restore on disconnect. Requires iproute2.\n\n"
+            "Block DoH: block DNS-over-HTTPS to known resolvers in DNSCrypt\n"
+            "mode so apps cannot bypass dnscrypt-proxy (port 443 drops).\n\n"
             "Auth Mode: when Passwordless is OFF, connect/disconnect\n"
             "asks for your sudo password via pkexec.\n"
             "Enable to write a sudoers entry for password-free operation."
@@ -443,6 +460,10 @@ class SettingsPanel(QWidget):
 
     def _on_auth_toggled(self) -> None:
         username = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+        if not _nopasswd_active() and not username:
+            self._auth_btn.setText("Cannot enable: $USER not set in environment.")
+            QTimer.singleShot(3000, self._refresh_auth_btn)
+            return
         if _nopasswd_active():
             cmd = ["pkexec", sys.executable, _RUNNER_PATH, "--remove-nopasswd"]
         else:
@@ -520,7 +541,9 @@ class SettingsPanel(QWidget):
         ar = cfg().get("auto_reconnect")
         self._auto_reconnect_toggle.setChecked(ar.get("enabled", True), silent=True)
         self._reconnect_delay.setValue(ar.get("delay_seconds", 15))
-        self._update_check_toggle.setChecked(cfg().get("update_check"), silent=True)
+        self._update_check_toggle.setChecked(cfg().get("update_check"),   silent=True)
+        self._mac_toggle.setChecked(cfg().get("mac_randomize"),           silent=True)
+        self._doh_block_toggle.setChecked(cfg().get("doh_block"),         silent=True)
         self._refresh_auth_btn()
 
     def _validate_ports(self) -> str | None:
@@ -609,7 +632,9 @@ class SettingsPanel(QWidget):
         cfg().set("autostart",    self._autostart_toggle.isChecked())
         cfg().set("auto_reconnect", "enabled",        self._auto_reconnect_toggle.isChecked())
         cfg().set("auto_reconnect", "delay_seconds",  self._reconnect_delay.value())
-        cfg().set("update_check", self._update_check_toggle.isChecked())
+        cfg().set("update_check",  self._update_check_toggle.isChecked())
+        cfg().set("mac_randomize", self._mac_toggle.isChecked())
+        cfg().set("doh_block",     self._doh_block_toggle.isChecked())
         cfg().save()
 
         # Apply autostart change immediately

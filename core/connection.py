@@ -8,6 +8,7 @@ from .dnscrypt     import DNSCryptManager
 from .i2p          import I2PManager
 from .onion_server import OnionServerManager
 from .firewall     import FirewallManager
+from .mac          import MacRandomizer
 from .platform     import is_nixos
 
 
@@ -27,6 +28,7 @@ class ConnectionManager:
         self._i2p   = I2PManager(log)
         self._onion = OnionServerManager(log)
         self._fw    = FirewallManager(log)
+        self._mac   = MacRandomizer(log)
         self._layers: dict[str, bool] = {}
 
     def connect(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool,
@@ -61,6 +63,12 @@ class ConnectionManager:
 
     def _do_connect(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool,
                     use_onion_server: bool) -> None:
+        # ── PHASE 0: MAC address randomization ────────────────────────────────
+        # Done before any network activity so Tor bootstraps with the new MAC
+        # already visible to the local network.  Best-effort — never raises.
+        if cfg().get("mac_randomize"):
+            self._mac.randomize()
+
         # ── PHASE 1: configure every service (nothing started yet) ────────────
         # All configs are written before the firewall goes up so there is
         # zero window where traffic can reach the clearnet.
@@ -106,13 +114,26 @@ class ConnectionManager:
             i2p_transparent=i2p_will_transparent,
         )
 
-        # ── PHASE 3: route system DNS through the active privacy layer ────────
-        # resolvectl is called on any system with systemd-resolved so the stub
-        # resolver forwards queries to our proxy instead of upstream nameservers.
-        # The nftables/iptables redirect on port 53 is a second safety net.
+        # ── PHASE 3: pre-start dnscrypt-proxy in DNS-only mode ───────────────
+        # In DNSCrypt-only mode (no Tor), dnscrypt-proxy has no upstream
+        # dependency and can start immediately.  Starting it BEFORE the DNS
+        # redirect in PHASE 4 eliminates the window where port 5380 is
+        # redirected-to but nothing is bound yet.
+        #
+        # In Tor+DNSCrypt mode, dnscrypt-proxy routes its upstream queries
+        # through Tor SOCKS — it cannot start until Tor is running, so it
+        # is started in PHASE 5 (after Tor bootstrap completes).
+        if use_dnscrypt and not use_tor:
+            self._dns.start()
+            self._layers["dnscrypt"] = True
+
+        # ── PHASE 4: route system DNS through the active privacy layer ────────
+        # dnscrypt-proxy is already bound when dns-only (started above), so
+        # the redirect is seamless.  In Tor mode, nftables redirects port 53
+        # to Tor's DNSPort while Tor bootstraps in PHASE 5.
         self._apply_dns(use_tor, use_dnscrypt)
 
-        # ── PHASE 4: start services (firewall already protects all traffic) ───
+        # ── PHASE 5: start remaining services ────────────────────────────────
 
         if use_tor:
             # HTTP file server must be up before Tor establishes the HS circuit.
@@ -132,12 +153,13 @@ class ConnectionManager:
                         "once Tor is fully bootstrapped."
                     )
 
-        if use_dnscrypt:
+        if use_dnscrypt and use_tor:
+            # Tor is now running — dnscrypt-proxy can reach its SOCKS port.
             self._dns.start()
             self._layers["dnscrypt"] = True
 
         if use_i2p:
-            self._i2p.start()
+            self._i2p.start(transparent=i2p_will_transparent)
             self._layers["i2p"] = True
 
         if use_tor and use_i2p:
@@ -159,8 +181,16 @@ class ConnectionManager:
         (e.g. dnscrypt config was modified but service never launched).
         """
         # Restore DNS routing first so resolver is healthy when rules drop.
+        # IMPORTANT: _restore_dns() checks self._layers which is empty when
+        # a service fails during startup (PHASE 4 — before _layers is
+        # populated).  Use _configured instead so DNS is always reverted even
+        # if the service never reached the running state.
         try:
-            self._restore_dns()
+            if is_nixos() or _resolved_running():
+                if self._configured.get("dnscrypt"):
+                    self._dns.nixos_restore_dns()
+                elif self._configured.get("tor"):
+                    self._tor.nixos_restore_dns()
         except Exception:
             pass
         # Pre-restore dnscrypt: puts config back + restarts resolved
@@ -173,6 +203,11 @@ class ConnectionManager:
         # Remove firewall rules (restores connectivity).
         try:
             self._fw.remove()
+        except Exception:
+            pass
+        # Restore original MAC addresses.
+        try:
+            self._mac.restore()
         except Exception:
             pass
         # Stop / restore services in reverse order.
@@ -243,6 +278,10 @@ class ConnectionManager:
                 pass
 
         self._layers.clear()
+        try:
+            self._mac.restore()
+        except Exception:
+            pass
         self._log("[OK] All layers disconnected.")
 
     # ── DNS routing via resolvectl ─────────────────────────────────────────────

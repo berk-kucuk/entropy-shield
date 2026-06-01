@@ -51,6 +51,16 @@ _CHROMIUM_BINS = [
 
 _FIREFOX_BINS = ["firefox", "firefox-esr"]
 
+# Terminal emulators in priority order.
+# Most inherit env from the Popen call; gnome-terminal routes through a D-Bus
+# daemon so proxy vars must be passed explicitly via env(1).
+_TERMINAL_BINS    = [
+    "alacritty", "kitty", "foot", "wezterm",
+    "gnome-terminal", "konsole", "xfce4-terminal", "mate-terminal",
+    "lxterminal", "xterm",
+]
+_DBUS_TERMINALS = {"gnome-terminal"}
+
 
 def _real_user() -> tuple[int, pwd.struct_passwd] | None:
     # When running as root via pkexec/sudo, find the original user.
@@ -175,6 +185,15 @@ def _spawn_as_user(cmd: list[str], pw: pwd.struct_passwd,
     raise RuntimeError("runuser/su not found — cannot launch browser as user.")
 
 
+def _find_terminal() -> tuple[str, str] | None:
+    """Return (path, binary_name) of the first available terminal emulator."""
+    for b in _TERMINAL_BINS:
+        p = shutil.which(b)
+        if p:
+            return p, b
+    return None
+
+
 # ── public API ────────────────────────────────────────────────
 
 def launch_tor(socks_port: int, log: Callable[[str], None]) -> None:
@@ -257,3 +276,56 @@ def launch_i2p(http_port: int, socks_port: int,
 
     raise RuntimeError(
         "No supported browser found. Install firefox, chromium, or brave.")
+
+
+def launch_proxy_terminal(socks_port: int, log: Callable[[str], None]) -> None:
+    """Open a terminal with Tor proxy env vars pre-set.
+
+    The terminal inherits the proxy environment directly — only that terminal
+    session is affected; no system-wide files are written.
+    """
+    info = _real_user()
+    if info is None:
+        raise RuntimeError(
+            "Cannot determine real user UID (run via sudo or pkexec).")
+    uid, pw = info
+    env = _session_env(uid, pw)
+
+    socks5h_url = f"socks5h://127.0.0.1:{socks_port}"
+    no_proxy    = "localhost,127.0.0.1,127.0.0.0/8,::1"
+    proxy_pairs = [
+        ("ALL_PROXY",    socks5h_url), ("all_proxy",    socks5h_url),
+        ("SOCKS_PROXY",  socks5h_url), ("socks_proxy",  socks5h_url),
+        ("HTTP_PROXY",   socks5h_url), ("http_proxy",   socks5h_url),
+        ("HTTPS_PROXY",  socks5h_url), ("https_proxy",  socks5h_url),
+        ("NO_PROXY",     no_proxy),    ("no_proxy",     no_proxy),
+    ]
+    for k, v in proxy_pairs:
+        env[k] = v
+
+    result = _find_terminal()
+    if result is None:
+        raise RuntimeError(
+            "No supported terminal emulator found. "
+            "Install alacritty, kitty, foot, gnome-terminal, konsole, or xterm.")
+
+    term_path, term_name = result
+    user_shell = pw.pw_shell or "/usr/bin/bash"
+
+    # Set SHELL so terminal emulators (konsole, alacritty, …) know which
+    # shell to start.  Without this they may receive an empty string from
+    # the stripped environment and fall back with a warning.
+    env["SHELL"] = user_shell
+
+    if term_name in _DBUS_TERMINALS:
+        # gnome-terminal talks to a D-Bus daemon that spawns the shell, so
+        # the Popen env dict won't reach the shell — pass vars via env(1).
+        env_args = [f"{k}={v}" for k, v in proxy_pairs]
+        cmd = [term_path, "--", "env"] + env_args + [user_shell]
+    else:
+        cmd = [term_path]
+
+    _spawn_as_user(cmd, pw, env)
+    log(f"[TERMINAL] {term_name} launched with Tor proxy environment.")
+    log("[TERMINAL] Note: curl/wget use socks5h:// — curl works natively; "
+        "wget does not support SOCKS (use curl or torsocks wget).")

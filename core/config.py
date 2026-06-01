@@ -49,6 +49,8 @@ _DEFAULTS: dict = {
     "kill_switch":    True,
     "auto_connect":   False,
     "autostart":      True,
+    "mac_randomize":  False,
+    "doh_block":      True,
 }
 
 

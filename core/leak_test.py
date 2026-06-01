@@ -179,7 +179,6 @@ class LeakTester:
             tz = os.environ.get("TZ", "")
             if not tz:
                 # Read /etc/localtime symlink
-                import time as _time
                 offset_sec = -time.timezone if not time.localtime().tm_isdst else -time.altzone
                 if offset_sec == 0:
                     return TestResult("Timezone", True,

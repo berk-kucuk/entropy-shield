@@ -153,13 +153,27 @@ class TorManager:
         if not self._bootstrap_done.wait(timeout=90):
             if self._tor_proc and self._tor_proc.poll() is None:
                 self._tor_proc.terminate()
+                try:
+                    self._tor_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._tor_proc.kill()
+                    self._tor_proc.wait()
             self._tor_proc = None
             raise RuntimeError("Tor bootstrap timed out (90 s). Check your network.")
 
         if self._bootstrap_error:
             err = self._bootstrap_error
-            exit_code = self._tor_proc.poll() if self._tor_proc else None
-            self._tor_proc = None
+            proc, self._tor_proc = self._tor_proc, None
+            exit_code = proc.poll() if proc else None
+            if proc and exit_code is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            elif proc:
+                proc.wait()  # reap zombie
             suffix = f" (exit code: {exit_code})" if exit_code is not None else ""
             raise RuntimeError(f"Tor failed to start{suffix}: {err}")
 
@@ -259,6 +273,56 @@ class TorManager:
             if not resp.startswith("250"):
                 raise RuntimeError(f"NEWNYM failed: {resp.strip()}")
 
+    # ── control port helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _ctrl_recv(s) -> str:
+        """Read a complete Tor control-port response and return the data value(s).
+
+        Handles both single-line (250-key=value) and multi-line (250+key=\\n...\\n.)
+        response formats.  Returns the raw value string (after the '=').
+        """
+        resp = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            resp += chunk
+            decoded = resp.decode(errors="replace")
+            # Response is complete when it contains "250 OK" (success) or an
+            # error code on a standalone line (513/515/552/554).
+            # We check for the error codes as line prefixes (after any newline)
+            # so partial first-chunk matches don't cause false positives.
+            if "250 OK" in decoded:
+                break
+            for ec in ("513 ", "515 ", "552 ", "554 "):
+                if f"\n{ec}" in decoded or decoded.startswith(ec):
+                    break
+            else:
+                continue
+            break
+        text = resp.decode(errors="replace")
+        data_lines: list[str] = []
+        in_block = False
+        for line in text.splitlines():
+            if line.startswith("250+") and "=" in line:
+                in_block = True
+                val = line[4:].partition("=")[2]
+                if val:
+                    data_lines.append(val)
+            elif line == ".":
+                in_block = False
+            elif in_block and not line.startswith("250"):
+                data_lines.append(line)
+            elif (line.startswith("250-") or line.startswith("250 ")) and "=" in line:
+                data_lines.append(line[4:].partition("=")[2].strip())
+        return "\n".join(data_lines)
+
+    def _ctrl_getinfo(self, s, key: str) -> str:
+        """Send GETINFO <key> over an already-authenticated socket and return the value."""
+        s.sendall(f"GETINFO {key}\r\n".encode())
+        return self._ctrl_recv(s)
+
     def query_control(self, *commands: str) -> dict[str, str]:
         """Send one or more GETINFO commands to the control port.
 
@@ -288,35 +352,105 @@ class TorManager:
                         resp += chunk
                         if b"250 OK" in resp or b"515 " in resp:
                             break
-                    for line in resp.decode(errors="replace").splitlines():
-                        if line.startswith("250-") or line.startswith("250 "):
-                            kv = line[4:]
-                            if "=" in kv:
-                                k, _, v = kv.partition("=")
-                                result[k.strip()] = v.strip()
+                    lines_resp = resp.decode(errors="replace").splitlines()
+                    idx = 0
+                    while idx < len(lines_resp):
+                        ln = lines_resp[idx]
+                        if ln.startswith("250+") and "=" in ln:
+                            # Multi-line reply block (e.g. circuit-status)
+                            k, _, v = ln[4:].partition("=")
+                            data: list[str] = [v] if v.strip() else []
+                            idx += 1
+                            while idx < len(lines_resp):
+                                data_ln = lines_resp[idx]
+                                if data_ln in (".", "") or data_ln.startswith("250"):
+                                    break
+                                data.append(data_ln)
+                                idx += 1
+                            result[k.strip()] = "\n".join(data)
+                        elif (ln.startswith("250-") or ln.startswith("250 ")) and "=" in ln:
+                            k, _, v = ln[4:].partition("=")
+                            result[k.strip()] = v.strip()
+                        idx += 1
         except Exception:
             pass
         return result
 
     def get_circuit_info(self) -> dict:
-        """Return a summary dict with circuit count and exit country."""
-        data = self.query_control("circuit-status", "traffic/read", "traffic/written")
-        circuits = [l for l in data.get("circuit-status", "").splitlines()
-                    if "BUILT" in l]
-        exit_country = ""
-        for c in circuits:
-            # Last node in path is exit; country code follows ~{cc}
-            import re
-            m = re.search(r"~\{([A-Z]{2})\}", c.split(",")[-1] if "," in c else c)
-            if m:
-                exit_country = m.group(1)
-                break
-        return {
-            "circuit_count": len(circuits),
-            "exit_country":  exit_country,
-            "bytes_read":    int(data.get("traffic/read", 0) or 0),
-            "bytes_written": int(data.get("traffic/written", 0) or 0),
-        }
+        """Return a summary dict with circuit count, exit country, and traffic.
+
+        Opens a single authenticated control-port session and chains the
+        needed GETINFO calls:
+          1. circuit-status          → count BUILT circuits
+          2. ns/id/<fingerprint>     → get exit relay's IP (from 'r' line)
+          3. ip-to-country/<ip>      → 2-char country code
+          4. traffic/read + written  → cumulative byte counters
+        """
+        import socket as _socket
+        ctrl        = cfg().get("tor", "control_port")
+        cookie_path = os.path.join(_DATA_DIR, "control_auth_cookie")
+
+        empty = {"circuit_count": 0, "exit_country": "",
+                 "bytes_read": 0, "bytes_written": 0}
+        try:
+            with open(cookie_path, "rb") as f:
+                cookie_hex = f.read().hex()
+        except FileNotFoundError:
+            return empty
+
+        try:
+            with _socket.socket() as s:
+                s.settimeout(5)
+                s.connect(("127.0.0.1", ctrl))
+                s.sendall(f"AUTHENTICATE {cookie_hex}\r\n".encode())
+                self._ctrl_recv(s)  # consume auth response
+
+                # ── 1. circuit list ───────────────────────────────
+                circuits_raw = self._ctrl_getinfo(s, "circuit-status")
+                all_built     = [l for l in circuits_raw.splitlines() if "BUILT" in l]
+                general       = [l for l in all_built if "PURPOSE=GENERAL" in l]
+
+                # ── 2. exit country from first general BUILT circuit ──
+                exit_country = ""
+                for circ in general:
+                    parts = circ.split()
+                    if len(parts) < 3 or not parts[2].startswith("$"):
+                        continue
+                    relays = parts[2].split(",")
+                    fp_m   = re.match(r'\$([0-9A-Fa-f]{40})', relays[-1])
+                    if not fp_m:
+                        continue
+                    fp = fp_m.group(1)
+
+                    # ── 3. relay network-status → IP ─────────────
+                    ns_raw = self._ctrl_getinfo(s, f"ns/id/{fp}")
+                    ip = None
+                    for ns_line in ns_raw.splitlines():
+                        if ns_line.startswith("r "):
+                            ns_parts = ns_line.split()
+                            if len(ns_parts) >= 7:
+                                ip = ns_parts[6]
+                            break
+
+                    if ip:
+                        # ── 4. IP → country code ─────────────────
+                        cc = self._ctrl_getinfo(s, f"ip-to-country/{ip}").strip()
+                        if len(cc) == 2 and cc.isalpha() and cc not in ("ZZ",):
+                            exit_country = cc.upper()
+                    break  # one exit is enough
+
+                # ── 5. traffic counters ───────────────────────────
+                read_raw    = self._ctrl_getinfo(s, "traffic/read").strip()
+                written_raw = self._ctrl_getinfo(s, "traffic/written").strip()
+
+                return {
+                    "circuit_count": len(all_built),
+                    "exit_country":  exit_country,
+                    "bytes_read":    int(read_raw    or 0),
+                    "bytes_written": int(written_raw or 0),
+                }
+        except Exception:
+            return empty
 
     # ── orphan / stale-state cleanup ─────────────────────────────
 
@@ -500,13 +634,14 @@ class TorManager:
         }
         busy = []
         for name, port in ports.items():
+            s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
             try:
-                s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-                s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
                 s.bind(("127.0.0.1", int(port)))
-                s.close()
             except OSError:
                 busy.append(f"{name} :{port}")
+            finally:
+                s.close()
         if busy:
             raise RuntimeError(
                 f"Port(s) already in use — cannot start Tor: {', '.join(busy)}. "

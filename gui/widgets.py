@@ -1,15 +1,16 @@
 from __future__ import annotations
 import math
 import time
+from collections import deque
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSizePolicy,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve,
-    pyqtProperty, pyqtSignal, QRectF, QPointF,
+    pyqtProperty, pyqtSignal, QRectF, QPointF, QSize,
 )
-from PyQt6.QtGui import QPainter, QColor, QPen, QLinearGradient, QPainterPath
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QPainterPath
 
 from gui.themes import current as theme
 
@@ -152,12 +153,19 @@ class StatusRing(QWidget):
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if theme()["name"] == "circuit":
+            self._paint_cpu_chip(p)
+        else:
+            self._paint_ring(p)
 
+    # ── ring (all non-circuit themes) ─────────────────────────
+
+    def _paint_ring(self, p: QPainter) -> None:
         glow    = theme().get("glow", _RING_FALLBACK)
         r, g, b = glow.get(self._state, glow["off"])
         intensity = (0.5 + 0.5 * self._pulse) if self._state == "connecting" else 0.90
         cx, cy = self.width() / 2, self.height() / 2
-        outer = self.width() / 2 - 4
+        outer  = self.width() / 2 - 4
 
         for i in range(12, 0, -1):
             a = int(intensity * 90 * ((12 - i) / 12) ** 1.6)
@@ -188,14 +196,12 @@ class StatusRing(QWidget):
                        int(cx - sym_r * 0.1), int(cy + sym_r * 0.7))
             p.drawLine(int(cx - sym_r * 0.1), int(cy + sym_r * 0.7),
                        int(cx + sym_r * 0.8), int(cy - sym_r * 0.65))
-
         elif self._state == "connecting":
             a = int(120 + 135 * self._pulse)
             p.setBrush(QColor(r, g, b, a))
             p.setPen(Qt.PenStyle.NoPen)
             dot = int(sym_r * 0.55)
             p.drawEllipse(int(cx - dot), int(cy - dot), dot * 2, dot * 2)
-
         else:
             p.setPen(QPen(QColor(r, g, b, int(160 * intensity)), 1.8,
                           Qt.PenStyle.SolidLine,
@@ -206,6 +212,112 @@ class StatusRing(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             ar = int(bw * 0.38)
             p.drawArc(int(cx - ar), int(by - ar * 2 + 2), ar * 2, ar * 2, 0, 180 * 16)
+
+    # ── CPU chip (circuit theme only) ─────────────────────────
+
+    def _paint_cpu_chip(self, p: QPainter) -> None:
+        """IC/CPU chip shape — square body with pin pads, inner die, state symbol."""
+        glow      = theme().get("glow", _RING_FALLBACK)
+        r, g, b   = glow.get(self._state, glow["off"])
+        intensity = (0.5 + 0.5 * self._pulse) if self._state == "connecting" else 0.90
+
+        W  = float(self.width())
+        cx = W / 2.0
+        cy = float(self.height()) / 2.0
+
+        chip_s = W * 0.63
+        pin_w  = chip_s * 0.115
+        pin_h  = chip_s * 0.072
+        pin_n  = 4
+        die_s  = chip_s * 0.52
+        chip_x = cx - chip_s / 2
+        chip_y = cy - chip_s / 2
+
+        # ── outer glow halo ────────────────────────────────────
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(10, 0, -1):
+            a      = int(intensity * 72 * ((10 - i + 1) / 10) ** 2.2)
+            expand = i * 1.7
+            p.setPen(QPen(QColor(r, g, b, a), 1))
+            p.drawRoundedRect(
+                QRectF(chip_x - expand, chip_y - expand,
+                       chip_s + 2*expand, chip_s + 2*expand), 5, 5)
+
+        # ── pin pads ───────────────────────────────────────────
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(r, g, b, int(138 * intensity)))
+        sp = chip_s / (pin_n + 1)
+        for i in range(1, pin_n + 1):
+            px = chip_x + i * sp - pin_w / 2
+            p.drawRect(QRectF(px, chip_y - pin_h,  pin_w, pin_h))
+            p.drawRect(QRectF(px, chip_y + chip_s, pin_w, pin_h))
+            py = chip_y + i * sp - pin_w / 2
+            p.drawRect(QRectF(chip_x - pin_h,     py, pin_h, pin_w))
+            p.drawRect(QRectF(chip_x + chip_s,    py, pin_h, pin_w))
+
+        # ── chip body ──────────────────────────────────────────
+        p.setPen(QPen(QColor(r, g, b, int(172 * intensity)), 1.5))
+        p.setBrush(QColor(r, g, b, int(14 * intensity)))
+        p.drawRoundedRect(QRectF(chip_x, chip_y, chip_s, chip_s), 4, 4)
+
+        # ── corner alignment circle (top-left, standard IC mark) ──
+        dot_r = chip_s * 0.068
+        dot_x = chip_x + chip_s * 0.115
+        dot_y = chip_y + chip_s * 0.115
+        p.setPen(QPen(QColor(r, g, b, int(105 * intensity)), 1.0))
+        p.setBrush(QColor(r, g, b, int(52 * intensity)))
+        p.drawEllipse(QRectF(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2))
+
+        # ── inner die ──────────────────────────────────────────
+        die_x = cx - die_s / 2
+        die_y = cy - die_s / 2
+        p.setPen(QPen(QColor(r, g, b, int(88 * intensity)), 0.9))
+        p.setBrush(QColor(r, g, b, int(9 * intensity)))
+        p.drawRect(QRectF(die_x, die_y, die_s, die_s))
+
+        # Decorative bus lines inside die
+        line_a = int(45 * intensity)
+        p.setPen(QPen(QColor(r, g, b, line_a), 0.65))
+        for frac in (0.32, 0.68):
+            y_ln = die_y + die_s * frac
+            p.drawLine(QPointF(die_x + die_s * 0.10, y_ln),
+                       QPointF(die_x + die_s * 0.90, y_ln))
+        x_ln = die_x + die_s * 0.50
+        p.drawLine(QPointF(x_ln, die_y + die_s * 0.10),
+                   QPointF(x_ln, die_y + die_s * 0.90))
+
+        # ── state symbol inside die ────────────────────────────
+        sym_r   = die_s * 0.22
+        sym_pen = QPen(QColor(r, g, b, int(232 * intensity)), 2.1,
+                       Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap,
+                       Qt.PenJoinStyle.RoundJoin)
+
+        if self._state == "on":
+            p.setPen(sym_pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLine(QPointF(cx - sym_r * 0.65, cy),
+                       QPointF(cx - sym_r * 0.10, cy + sym_r * 0.65))
+            p.drawLine(QPointF(cx - sym_r * 0.10, cy + sym_r * 0.65),
+                       QPointF(cx + sym_r * 0.76, cy - sym_r * 0.55))
+        elif self._state == "connecting":
+            a   = int(120 + 135 * self._pulse)
+            dot = sym_r * 0.52
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(r, g, b, a))
+            p.drawEllipse(QRectF(cx - dot, cy - dot, dot * 2, dot * 2))
+        else:
+            bw  = sym_r * 1.62
+            bh  = sym_r * 1.28
+            bx  = cx - bw / 2
+            by_ = cy - sym_r * 0.08
+            p.setPen(QPen(QColor(r, g, b, int(158 * intensity)), 1.65,
+                          Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(bx, by_, bw, bh), 3, 3)
+            ar = bw * 0.36
+            p.drawArc(QRectF(cx - ar, by_ - ar * 1.75, ar * 2, ar * 2),
+                      0, 180 * 16)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -618,3 +730,221 @@ class NetSpeedBar(QWidget):
         self._last_rx   = rx
         self._last_tx   = tx
         self._last_time = now
+
+
+# ──────────────────────────────────────────────────────────────
+#  NetSpeedGraph  — real-time bandwidth graph (replaces NetSpeedBar)
+# ──────────────────────────────────────────────────────────────
+
+_HISTORY = 30  # seconds of rolling history
+
+
+class NetSpeedGraph(QWidget):
+    """Compact bandwidth graph: rolling 30-second line chart + current speed labels.
+
+    Drop-in replacement for NetSpeedBar — same set_active() interface.
+    """
+
+    _FULL_H = 54  # fully-expanded height in pixels
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Don't use setFixedHeight — we animate maximumHeight so the layout
+        # smoothly pushes widgets below as the graph expands/collapses.
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(0)       # collapsed at start
+
+        self._last_rx:   int   = 0
+        self._last_tx:   int   = 0
+        self._last_time: float = 0.0
+        self._cur_down:  float = 0.0
+        self._cur_up:    float = 0.0
+        self._hist_down: deque[float] = deque(maxlen=_HISTORY)
+        self._hist_up:   deque[float] = deque(maxlen=_HISTORY)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(1000)
+
+        self._anim = QPropertyAnimation(self, b"maximumHeight")
+        self._anim.setDuration(380)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self.hide()
+
+    # ── public ────────────────────────────────────────────────
+
+    def set_active(self, active: bool) -> None:
+        # Disconnect any pending hide callback from a previous collapse
+        try:
+            self._anim.finished.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+
+        if active:
+            self._last_rx = self._last_tx = 0
+            self._last_time = 0.0
+            self._cur_down = self._cur_up = 0.0
+            self._hist_down = deque(maxlen=_HISTORY)
+            self._hist_up   = deque(maxlen=_HISTORY)
+            self.show()
+            self._anim.stop()
+            self._anim.setStartValue(self.maximumHeight())
+            self._anim.setEndValue(self._FULL_H)
+            self._anim.start()
+        else:
+            self._anim.stop()
+            self._anim.setStartValue(self.maximumHeight())
+            self._anim.setEndValue(0)
+            self._anim.finished.connect(self.hide)
+            self._anim.start()
+
+    def sizeHint(self) -> QSize:
+        return QSize(300, self._FULL_H)
+
+    # ── internals ─────────────────────────────────────────────
+
+    @staticmethod
+    def _read_bytes() -> tuple[int, int]:
+        rx = tx = 0
+        try:
+            with open("/proc/net/dev") as f:
+                for line in f:
+                    if ":" not in line:
+                        continue
+                    iface, data = line.split(":", 1)
+                    if iface.strip() == "lo":
+                        continue
+                    fields = data.split()
+                    if len(fields) < 9:
+                        continue
+                    rx += int(fields[0])
+                    tx += int(fields[8])
+        except Exception:
+            pass
+        return rx, tx
+
+    @staticmethod
+    def _fmt(bps: float) -> str:
+        if bps >= 1_048_576:
+            return f"{bps / 1_048_576:.1f} MB/s"
+        if bps >= 1_024:
+            return f"{bps / 1_024:.0f} KB/s"
+        return f"{max(0, bps):.0f} B/s"
+
+    def _tick(self) -> None:
+        rx, tx = self._read_bytes()
+        now    = time.monotonic()
+        if self._last_time > 0 and now > self._last_time:
+            dt = now - self._last_time
+            self._cur_down = max(0.0, (rx - self._last_rx) / dt)
+            self._cur_up   = max(0.0, (tx - self._last_tx) / dt)
+            self._hist_down.append(self._cur_down)
+            self._hist_up.append(self._cur_up)
+        self._last_rx   = rx
+        self._last_tx   = tx
+        self._last_time = now
+        if self.isVisible():
+            self.update()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        c       = theme()
+        W       = float(self.width())
+        H       = float(self.height())
+        LBL_W   = 88.0
+        GAP     = 8.0
+        GRAPH_W = 140.0
+
+        # Graph centred horizontally; labels float to its right
+        G_X = max(0.0, (W - GRAPH_W) / 2.0)
+        G_W = GRAPH_W
+        G_H = H - 8.0
+        G_Y = 4.0
+
+        if G_W < 10 or G_H < 6:
+            p.end()
+            return
+
+        is_dark = c["name"] != "light"
+        tx_x    = G_X + G_W + GAP
+
+        # ── graph background ──────────────────────────────────
+        p.fillRect(QRectF(G_X, G_Y, G_W, G_H),
+                   QColor(128, 128, 128, 20 if is_dark else 8))
+
+        down_pts = list(self._hist_down)
+        up_pts   = list(self._hist_up)
+
+        # ── labels (always visible) ───────────────────────────
+        font = QFont()
+        font.setPixelSize(10 if c["name"] != "pixel" else 7)
+        font.setWeight(QFont.Weight.Bold)
+        p.setFont(font)
+
+        p.setPen(QColor(c["blue"]))
+        p.drawText(QRectF(tx_x, G_Y, LBL_W - 2, G_H / 2),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   f"↓  {self._fmt(self._cur_down)}")
+        p.setPen(QColor(c["green"]))
+        p.drawText(QRectF(tx_x, G_Y + G_H / 2, LBL_W - 2, G_H / 2),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   f"↑  {self._fmt(self._cur_up)}")
+
+        # Need at least 2 real samples to draw a line
+        n = min(len(down_pts), len(up_pts))
+        if n < 2:
+            return
+
+        # ── scale ─────────────────────────────────────────────
+        all_vals = down_pts + up_pts
+        max_val  = max(max(all_vals), 2048.0)
+
+        # Step width is fixed to _HISTORY so the x-scale stays constant
+        # as the deque fills up.  New samples enter from the right.
+        step    = G_W / (_HISTORY - 1)
+        fill_a  = 28 if is_dark else 12
+
+        def _draw_series(pts: list[float], hex_color: str) -> None:
+            nn = len(pts)
+            if nn < 2:
+                return
+            # Right-align: the newest point is always at G_X + G_W
+            x0 = G_X + G_W - (nn - 1) * step
+
+            color      = QColor(hex_color)
+            fill_color = QColor(color)
+            fill_color.setAlpha(fill_a)
+
+            # Filled area under curve
+            area = QPainterPath()
+            area.moveTo(x0, G_Y + G_H)
+            for i, val in enumerate(pts):
+                x = x0 + i * step
+                y = max(G_Y, min(G_Y + G_H,
+                                 G_Y + G_H - (val / max_val) * G_H))
+                area.lineTo(x, y)
+            area.lineTo(x0 + (nn - 1) * step, G_Y + G_H)
+            area.closeSubpath()
+            p.fillPath(area, fill_color)
+
+            # Line on top of fill
+            p.setPen(QPen(color, 1.4,
+                          Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap,
+                          Qt.PenJoinStyle.RoundJoin))
+            line = QPainterPath()
+            for i, val in enumerate(pts):
+                x = x0 + i * step
+                y = max(G_Y, min(G_Y + G_H,
+                                 G_Y + G_H - (val / max_val) * G_H))
+                if i == 0:
+                    line.moveTo(x, y)
+                else:
+                    line.lineTo(x, y)
+            p.drawPath(line)
+
+        _draw_series(down_pts, c["blue"])
+        _draw_series(up_pts,   c["green"])

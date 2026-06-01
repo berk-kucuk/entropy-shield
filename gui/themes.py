@@ -451,7 +451,8 @@ QPushButton#connectBtn:disabled {{ opacity: 0.45; }}
 
 /* ── browser buttons ── */
 QPushButton#torBrowserBtn,
-QPushButton#i2pBrowserBtn {{
+QPushButton#i2pBrowserBtn,
+QPushButton#proxyTerminalBtn {{
     background: {c['card_bg']};
     border: {bw} solid {c['border']};
     border-radius: {rr}px;
@@ -470,8 +471,14 @@ QPushButton#i2pBrowserBtn:enabled:hover {{
     border-color: {c['green']};
     color: {c['green']};
 }}
+QPushButton#proxyTerminalBtn:enabled:hover {{
+    background: rgba(180,180,180,0.09);
+    border-color: {c['yellow']};
+    color: {c['yellow']};
+}}
 QPushButton#torBrowserBtn:disabled,
-QPushButton#i2pBrowserBtn:disabled {{ opacity: 0.28; }}
+QPushButton#i2pBrowserBtn:disabled,
+QPushButton#proxyTerminalBtn:disabled {{ opacity: 0.28; }}
 
 /* ── tool buttons ── */
 QPushButton#toolBtn {{
