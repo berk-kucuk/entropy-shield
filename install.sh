@@ -377,8 +377,10 @@ in
     '')
   ];
 
+  # Port 5380 matches the entropy-shield default (core/config.py).
+  # 5353 is reserved for mDNS (avahi) and must NOT be used here.
   environment.etc."dnscrypt-proxy/dnscrypt-proxy.toml".text = ''
-    listen_addresses = ["127.0.0.1:5353"]
+    listen_addresses = ["127.0.0.1:5380", "[::1]:5380"]
     require_nolog    = true
     require_nofilter = true
     ipv6_servers     = false
@@ -414,11 +416,17 @@ in
     };
   };
 
+  services.tor.enable = true;
   services.tor.settings = {
     VirtualAddrNetworkIPv4 = "10.192.0.0/10";
     AutomapHostsOnResolve  = true;
-    TransPort = [{ addr = "127.0.0.1"; port = 9040; }];
-    DNSPort   = [{ addr = "127.0.0.1"; port = 5300; }];
+    AutomapHostsSuffixes   = ".onion,.exit";
+    # Ports must match entropy-shield defaults (core/config.py)
+    TransPort   = [{ addr = "127.0.0.1"; port = 9040; }];
+    DNSPort     = [{ addr = "127.0.0.1"; port = 5300; }];
+    SocksPort   = [{ addr = "127.0.0.1"; port = 9050; flags = ["IsolateDestAddr" "IsolateDestPort"]; }];
+    ControlPort = [{ addr = "127.0.0.1"; port = 9051; }];
+    CookieAuthentication = true;
   };
 
   security.polkit.extraConfig = ''
