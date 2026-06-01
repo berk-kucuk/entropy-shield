@@ -44,10 +44,10 @@ SUDOERS_FILE=/etc/sudoers.d/entropy-shield
 ICON_SYS_PIX=/usr/share/pixmaps/entropy-shield.png
 ICON_SYS_HIC=/usr/share/icons/hicolor/256x256/apps/entropy-shield.png
 
-# Pick best available logo (dark.png preferred; fallback to others)
+# Pick best available logo (oled.png preferred; fallback to others)
 pick_icon() {
     local logos_dir="$SCRIPT_DIR/logos"
-    for name in dark.png binary.png circuit.png pixel.png; do
+    for name in oled.png dark.png binary.png circuit.png pixel.png; do
         [[ -f "$logos_dir/$name" ]] && { echo "$logos_dir/$name"; return; }
     done
     echo ""
@@ -342,8 +342,8 @@ do_install_nixos() {
     step "Writing NixOS module → $module"
 
     # Resolve icon path for Nix module
-    local nix_icon="/opt/entropy-shield/logos/dark.png"
-    for name in dark.png binary.png circuit.png pixel.png; do
+    local nix_icon="/opt/entropy-shield/logos/oled.png"
+    for name in oled.png dark.png binary.png circuit.png pixel.png; do
         [[ -f "$DEST/logos/$name" ]] && { nix_icon="/opt/entropy-shield/logos/$name"; break; }
     done
 

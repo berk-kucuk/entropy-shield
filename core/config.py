@@ -45,12 +45,13 @@ _DEFAULTS: dict = {
         "delay_seconds":   15,
         "max_attempts":    3,
     },
-    "update_check":   True,
-    "kill_switch":    True,
-    "auto_connect":   False,
-    "autostart":      True,
-    "mac_randomize":  False,
-    "doh_block":      True,
+    "update_check":             True,
+    "kill_switch":              True,
+    "auto_connect":             False,
+    "autostart":                True,
+    "mac_randomize":            False,
+    "doh_block":                True,
+    "circuit_renewal_minutes":  0,
 }
 
 

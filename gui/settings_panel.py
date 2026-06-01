@@ -27,7 +27,16 @@ _SUDOERS_FILE = "/etc/sudoers.d/entropy-shield"
 
 
 def _nopasswd_active() -> bool:
-    return os.path.exists(_SUDOERS_FILE)
+    # Cannot check /etc/sudoers.d/ directly (chmod 750 root:root blocks stat).
+    # Ask sudo itself whether the command is allowed without a password.
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "-l", sys.executable, _RUNNER_PATH],
+            capture_output=True, timeout=2,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
 
 _MARGIN = 14   # equal margin on all four sides of the settings card
 
@@ -403,6 +412,9 @@ class SettingsPanel(QWidget):
         self._reconnect_delay       = self._spinbox(lo=5, hi=120)
         self._reconnect_delay.setFixedWidth(80)
         self._update_check_toggle   = ToggleSwitch(checked=True)
+        self._circuit_renewal_spin  = self._spinbox(lo=0, hi=120)
+        self._circuit_renewal_spin.setFixedWidth(80)
+        self._circuit_renewal_spin.setToolTip("0 = disabled. Tor renews identity every N minutes.")
         self._mac_toggle            = ToggleSwitch(checked=False)
         self._doh_block_toggle      = ToggleSwitch(checked=True)
 
@@ -421,7 +433,8 @@ class SettingsPanel(QWidget):
         lay.addLayout(self._row("Start on Login",   self._autostart_toggle))
         lay.addLayout(self._row("Auto-Reconnect",   self._auto_reconnect_toggle))
         lay.addLayout(self._row("Reconnect Delay",  self._reconnect_delay))
-        lay.addLayout(self._row("Update Check",     self._update_check_toggle))
+        lay.addLayout(self._row("Update Check",        self._update_check_toggle))
+        lay.addLayout(self._row("Circuit Renewal (min)", self._circuit_renewal_spin))
         lay.addSpacing(8)
         lay.addWidget(self._section("PRIVACY"))
         lay.addLayout(self._row("MAC Randomize",    self._mac_toggle))
@@ -436,6 +449,8 @@ class SettingsPanel(QWidget):
             "reconnect after the configured delay.\n\n"
             "Update Check: check GitHub Releases for a newer version\n"
             "once per session (no telemetry, HTTPS only).\n\n"
+            "Circuit Renewal: automatically request a new Tor identity every\n"
+            "N minutes (0 = disabled). Sends a desktop notification on renewal.\n\n"
             "MAC Randomize: randomize interface MAC address on connect,\n"
             "restore on disconnect. Requires iproute2.\n\n"
             "Block DoH: block DNS-over-HTTPS to known resolvers in DNSCrypt\n"
@@ -542,6 +557,7 @@ class SettingsPanel(QWidget):
         self._auto_reconnect_toggle.setChecked(ar.get("enabled", True), silent=True)
         self._reconnect_delay.setValue(ar.get("delay_seconds", 15))
         self._update_check_toggle.setChecked(cfg().get("update_check"),   silent=True)
+        self._circuit_renewal_spin.setValue(cfg().get("circuit_renewal_minutes"))
         self._mac_toggle.setChecked(cfg().get("mac_randomize"),           silent=True)
         self._doh_block_toggle.setChecked(cfg().get("doh_block"),         silent=True)
         self._refresh_auth_btn()
@@ -632,8 +648,9 @@ class SettingsPanel(QWidget):
         cfg().set("autostart",    self._autostart_toggle.isChecked())
         cfg().set("auto_reconnect", "enabled",        self._auto_reconnect_toggle.isChecked())
         cfg().set("auto_reconnect", "delay_seconds",  self._reconnect_delay.value())
-        cfg().set("update_check",  self._update_check_toggle.isChecked())
-        cfg().set("mac_randomize", self._mac_toggle.isChecked())
+        cfg().set("update_check",            self._update_check_toggle.isChecked())
+        cfg().set("circuit_renewal_minutes", self._circuit_renewal_spin.value())
+        cfg().set("mac_randomize",           self._mac_toggle.isChecked())
         cfg().set("doh_block",     self._doh_block_toggle.isChecked())
         cfg().save()
 

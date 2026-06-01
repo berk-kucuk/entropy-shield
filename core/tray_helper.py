@@ -185,6 +185,15 @@ class TrayHelper(QObject):
                 QSystemTrayIcon.MessageIcon.Information, 2500,
             )
 
+        elif cmd.startswith("notify:"):
+            parts = cmd[7:].split("|", 2)
+            title = parts[0] if parts else "Entropy Shield"
+            body  = parts[1] if len(parts) > 1 else ""
+            ms    = int(parts[2]) if len(parts) > 2 else 3000
+            self._tray.showMessage(
+                title, body, QSystemTrayIcon.MessageIcon.Information, ms,
+            )
+
         elif cmd.startswith("icon:"):
             self._tray.setIcon(_load_icon(cmd[5:]))
 

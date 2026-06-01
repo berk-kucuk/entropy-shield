@@ -58,33 +58,51 @@ class MacRandomizer:
             if orig is None:
                 continue
             new_mac = _random_mac()
-            subprocess.run(["ip", "link", "set", iface, "down"],
-                           capture_output=True)
+
+            # Try without down/up first — avoids NetworkManager race condition
+            # where NM detects the link-down and restores the original MAC.
             r = subprocess.run(
                 ["ip", "link", "set", iface, "address", new_mac],
                 capture_output=True, text=True,
             )
-            subprocess.run(["ip", "link", "set", iface, "up"],
-                           capture_output=True)
-            if r.returncode == 0:
+            if r.returncode != 0:
+                # Driver requires interface to be down; try with down/up.
+                subprocess.run(["ip", "link", "set", iface, "down"],
+                               capture_output=True)
+                r = subprocess.run(
+                    ["ip", "link", "set", iface, "address", new_mac],
+                    capture_output=True, text=True,
+                )
+                subprocess.run(["ip", "link", "set", iface, "up"],
+                               capture_output=True)
+
+            actual = _get_mac(iface)
+            if actual == new_mac:
                 self._saved[iface] = orig
                 self._log(f"[MAC] {iface}: {orig} → {new_mac}")
             else:
-                err = r.stderr.strip() or "hardware may not support MAC change"
+                err = r.stderr.strip() or "driver or NetworkManager rejected change"
                 self._log(f"[MAC] {iface}: randomization failed ({err})")
 
     def restore(self) -> None:
         """Restore original MACs. Best-effort — never raises."""
         for iface, orig in self._saved.items():
-            subprocess.run(["ip", "link", "set", iface, "down"],
-                           capture_output=True)
             r = subprocess.run(
                 ["ip", "link", "set", iface, "address", orig],
                 capture_output=True, text=True,
             )
-            subprocess.run(["ip", "link", "set", iface, "up"],
-                           capture_output=True)
-            if r.returncode == 0:
+            if r.returncode != 0:
+                subprocess.run(["ip", "link", "set", iface, "down"],
+                               capture_output=True)
+                r = subprocess.run(
+                    ["ip", "link", "set", iface, "address", orig],
+                    capture_output=True, text=True,
+                )
+                subprocess.run(["ip", "link", "set", iface, "up"],
+                               capture_output=True)
+
+            actual = _get_mac(iface)
+            if actual == orig:
                 self._log(f"[MAC] {iface}: restored → {orig}")
             else:
                 self._log(f"[MAC] {iface}: restore failed ({r.stderr.strip()})")

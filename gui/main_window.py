@@ -846,9 +846,8 @@ class _TitleBar(QWidget):
     • ✕ button minimises to tray (does NOT quit).
     """
 
-    _LOGO_MAX_W = 140
-    _LOGO_MAX_H = 44
-    _TOTAL_H    = 62
+    _LOGO_SIZE = 40
+    _TOTAL_H   = 62
 
     def __init__(self, win: "MainWindow"):
         super().__init__(win)
@@ -866,9 +865,9 @@ class _TitleBar(QWidget):
         # ── logo (left) ───────────────────────────────────────
         self._logo_lbl = QLabel()
         self._logo_lbl.setObjectName("logoLbl")
+        self._logo_lbl.setFixedSize(self._LOGO_SIZE, self._LOGO_SIZE)
         self._logo_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._logo_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._set_logo_pixmap(_logo_for_theme(theme()["name"]))
         lay.addWidget(self._logo_lbl)
 
@@ -919,7 +918,7 @@ class _TitleBar(QWidget):
         if path:
             src = QPixmap(path)
             if not src.isNull():
-                pix = src.scaled(self._LOGO_MAX_W, self._LOGO_MAX_H,
+                pix = src.scaled(self._LOGO_SIZE, self._LOGO_SIZE,
                                  Qt.AspectRatioMode.KeepAspectRatio,
                                  Qt.TransformationMode.SmoothTransformation)
                 self._logo_lbl.setPixmap(pix)
@@ -1038,6 +1037,11 @@ class MainWindow(QMainWindow):
         self._circuit_timer.setInterval(30_000)
         self._circuit_timer.timeout.connect(self._refresh_circuit_info)
 
+        # Auto circuit renewal (interval set from config on connect)
+        self._auto_circuit_timer = QTimer(self)
+        self._auto_circuit_timer.timeout.connect(self._on_auto_circuit_renewal)
+        self._nc_is_auto: bool = False
+
         self._apply_theme()
         self._build_ui()
 
@@ -1083,6 +1087,10 @@ class MainWindow(QMainWindow):
 
     # ── theme ─────────────────────────────────────────────────
 
+    def _notify(self, title: str, body: str, ms: int = 3500) -> None:
+        """Send a desktop notification via the tray helper."""
+        self._tray_send(f"notify:{title}|{body}|{ms}")
+
     def _apply_theme(self) -> None:
         themes.set_theme(cfg().get("theme"))
         self.setStyleSheet(build_qss(theme()))
@@ -1102,6 +1110,15 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(_make_window_icon(logo_path))
         self._tray_send(f"icon:{logo_path}")
         self._append_log(f"[>] Settings saved. Theme: {theme_name}.")
+
+        # Reconfigure auto circuit renewal if currently connected via Tor
+        renewal = cfg().get("circuit_renewal_minutes")
+        if self._connected and "tor" in self._active_layers:
+            if renewal > 0:
+                self._auto_circuit_timer.setInterval(renewal * 60_000)
+                self._auto_circuit_timer.start()
+            else:
+                self._auto_circuit_timer.stop()
 
     # ── build UI ──────────────────────────────────────────────
 
@@ -1433,6 +1450,8 @@ class MainWindow(QMainWindow):
             self._leak_test_btn.setEnabled(True)
             self._speed_bar.set_active(True)
             self._tray_send("connected")
+            layers_label = "  ·  ".join(l.upper() for l in self._active_layers)
+            self._notify("Connected", layers_label)
             self._connect_time    = datetime.datetime.now()
             self._reconnect_attempts = 0
             self._exit_country    = ""
@@ -1442,14 +1461,18 @@ class MainWindow(QMainWindow):
             self._status_timer.start()
             if tor_on:
                 self._circuit_timer.start()
-                # Kick off first circuit info fetch
                 QTimer.singleShot(3000, self._refresh_circuit_info)
+                renewal = cfg().get("circuit_renewal_minutes")
+                if renewal > 0:
+                    self._auto_circuit_timer.setInterval(renewal * 60_000)
+                    self._auto_circuit_timer.start()
 
         elif success and info == "disconnect":
             self._connected = False
             self._health_timer.stop()
             self._status_timer.stop()
             self._circuit_timer.stop()
+            self._auto_circuit_timer.stop()
             self._connect_time  = None
             self._exit_country  = ""
             self._circuit_count = 0
@@ -1506,6 +1529,7 @@ class MainWindow(QMainWindow):
             self._health_timer.stop()
             self._status_timer.stop()
             self._circuit_timer.stop()
+            self._auto_circuit_timer.stop()
             self._connect_time   = None
             self._exit_country   = ""
             self._circuit_count  = 0
@@ -1554,6 +1578,7 @@ class MainWindow(QMainWindow):
             self._speed_bar.set_active(False)
             self._status_timer.stop()
             self._circuit_timer.stop()
+            self._auto_circuit_timer.stop()
             self._tray_send("disconnected")
         else:
             self._append_log(
@@ -1562,6 +1587,7 @@ class MainWindow(QMainWindow):
                 for ln in detail.splitlines()[-5:]:
                     if ln.strip():
                         self._append_log(f"[!] {ln.strip()}")
+            self._notify("Kill Switch", f"{service} dropped — emergency disconnect", 5000)
             self._start_worker("disconnect", {})
             self._maybe_schedule_reconnect()
 
@@ -1738,6 +1764,7 @@ class MainWindow(QMainWindow):
         self._health_timer.stop()
         self._status_timer.stop()
         self._circuit_timer.stop()
+        self._auto_circuit_timer.stop()
         self._reconnect_timer.stop()
         self._tray_send("disconnected")
         self._append_log("[PANIC] Emergency cleanup complete.")
@@ -1790,7 +1817,10 @@ class MainWindow(QMainWindow):
 
     # ── new circuit ───────────────────────────────────────────
 
-    def _on_new_circuit(self) -> None:
+    def _on_auto_circuit_renewal(self) -> None:
+        self._on_new_circuit(auto=True)
+
+    def _on_new_circuit(self, auto: bool = False) -> None:
         if self._nc_worker and self._nc_worker.isRunning():
             return
         # Also block if circuit_info is in flight — both read the same stdout pipe.
@@ -1799,6 +1829,7 @@ class MainWindow(QMainWindow):
         if not self._runner_proc or self._runner_proc.poll() is not None:
             self._append_log("[!] Privileged process is not running — cannot renew circuit.")
             return
+        self._nc_is_auto = auto
         self._new_circuit_btn.setEnabled(False)
         self._append_log("[TOR] Requesting new circuit…")
         self._nc_worker = _NewCircuitWorker(self._runner_proc)
@@ -1807,6 +1838,8 @@ class MainWindow(QMainWindow):
 
     def _on_nc_result(self, msg: str) -> None:
         self._append_log(msg)
+        if self._nc_is_auto and "[ERR]" not in msg.upper():
+            self._notify("New Circuit", "Tor identity rotated — new IP active")
         if self._connected and "tor" in self._active_layers:
             self._new_circuit_btn.setEnabled(True)
 

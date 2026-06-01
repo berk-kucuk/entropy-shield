@@ -17,7 +17,7 @@
 
 <br/>
 
-**A graphical front-end to manage Tor, DNSCrypt-proxy, I2P (i2pd), and Tor hidden services (onion services) on Linux — all in one place.**
+**A graphical front-end to manage Tor, DNSCrypt-proxy, I2P (i2pd), and Tor hidden services on Linux — all in one place.**
 
 *One-click control over your entire anonymity and privacy layer stack.*
 
@@ -104,29 +104,37 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 ### System Tray
 
 <div align="center">
-<img src="screenshots/tray_icon.png" alt="Entropy Shield System Tray" width="300" />
+<img src="screenshots/tray_icon.png" alt="Entropy Shield System Tray" width="600" />
 </div>
 
 ---
 
 ## Features
 
-| | Feature |
+| Feature | Description |
 |---|---|
-| 🔒 | **Layered anonymity** — combine Tor, DNSCrypt, I2P, and Onion Server in any combination |
-| 🔥 | **Automatic firewall rules** — nftables/iptables applied and removed automatically |
-| 🛡️ | **IPv6 leak protection** — `table ip6` rules block all IPv6 under Tor; DNSCrypt redirects IPv6 DNS too |
-| 🧅 | **Tor hidden service (onion server)** — publish any local directory as a `.onion` address |
-| 🦊 | **Isolated privacy browsers** — launch Firefox pre-configured for Tor or I2P without touching your normal profile |
-| 🎨 | **5 themes** — OLED, Light, Binary, Circuit, Pixel |
-| 🗂️ | **System tray** — minimize to tray with quick Connect/Disconnect/Quit |
-| ♻️ | **Zero footprint** — all config changes are backed up and reverted on disconnect |
-| ⚙️ | **Per-service settings** — ports, exit nodes, DNSSEC, bandwidth limits, serve directory |
-| 💀 | **Kill switch** — auto-disconnect if a privacy service drops |
-| 🚀 | **Auto-connect on startup** — connect with saved layer selection at launch |
-| 📶 | **Real-time network speed** — live download/upload bar while connected |
-| 🐧 | **Multi-distro support** — Arch, Debian, Fedora, openSUSE, NixOS |
-| ❄️ | **NixOS native** — declarative NixOS module, no mutable config patching |
+| **Layered anonymity** | Combine Tor, DNSCrypt, I2P, and Onion Server in any combination |
+| **Automatic firewall** | nftables/iptables rules applied and removed automatically |
+| **IPv6 leak protection** | Full `ip6` table blocks all IPv6 under Tor; DNSCrypt redirects IPv6 DNS |
+| **Tor hidden service** | Publish any local directory as a `.onion` address |
+| **Isolated privacy browsers** | Firefox pre-configured for Tor or I2P without touching your normal profile |
+| **Auto circuit renewal** | Tor identity rotates on a configurable timer with desktop notification |
+| **Desktop notifications** | System tray notifications on connect, kill switch events, and circuit renewal |
+| **MAC address randomization** | Randomize interface MAC on connect, restore on disconnect |
+| **Kill switch** | Emergency disconnect if any privacy service drops unexpectedly |
+| **Auto-reconnect** | Automatically reconnect after a kill-switch event |
+| **Auto-connect on startup** | Connect with saved layer selection at launch |
+| **Per-app routing** | Route specific applications through Tor, direct, or block entirely |
+| **Tor bridge support** | obfs4, meek-azure, snowflake, and manual bridge lines |
+| **Real-time network speed** | Live download/upload bar while connected |
+| **Leak test suite** | Tor exit, DNS leak, IPv6 leak, WebRTC, timezone, hostname checks |
+| **Passwordless mode** | Write a sudoers entry for password-free connect/disconnect |
+| **Block DoH** | Block DNS-over-HTTPS to prevent apps from bypassing DNSCrypt |
+| **5 themes** | OLED, Light, Binary, Circuit, Pixel — with animated glow border |
+| **System tray** | Minimize to tray with quick Connect/Disconnect/Quit |
+| **Zero footprint** | All config changes are backed up and reverted on disconnect |
+| **Multi-distro support** | Arch, Debian, Fedora, openSUSE, NixOS |
+| **NixOS native** | Declarative NixOS module, no mutable config patching |
 
 ---
 
@@ -136,34 +144,63 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 <tr>
 <td align="center" width="25%">
 
-### 🧅 Tor Transparent Proxy
+### Tor Transparent Proxy
 
-Routes **all TCP traffic** through the Tor anonymity network using nftables `REDIRECT` rules. DNS queries go to Tor's `DNSPort`. **All IPv6 is blocked** to prevent leaks (Tor's TransPort is IPv4-only). Supports custom exit nodes and `StrictNodes`.
+Routes **all TCP traffic** through the Tor anonymity network using nftables `REDIRECT` rules. DNS queries go to Tor's `DNSPort`. **All IPv6 is blocked** to prevent leaks (Tor's TransPort is IPv4-only). Supports custom exit nodes and `StrictNodes`. Auto circuit renewal rotates your Tor identity on a configurable schedule.
 
 </td>
 <td align="center" width="25%">
 
-### 🔐 DNSCrypt-proxy
+### DNSCrypt-proxy
 
 Encrypts DNS queries using [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy). Redirects both **IPv4 and IPv6** DNS traffic to prevent DNS leaks. Enforces no-log and no-filter server requirements. Integrates with `systemd-resolved` via `resolvectl`.
 
 </td>
 <td align="center" width="25%">
 
-### 🌐 I2P (i2pd)
+### I2P (i2pd)
 
 Starts [i2pd](https://i2pd.website) and configures its HTTP proxy and SOCKS proxy. When `redsocks` is available, enables **full transparent proxy** mode for all TCP. When combined with Tor, I2P outbound traffic tunnels through Tor's SOCKS port for layered anonymity.
 
 </td>
 <td align="center" width="25%">
 
-### 📡 Tor Hidden Service (Onion Server)
+### Tor Hidden Service
 
 Starts a built-in **HTTP file server** and publishes it as a Tor hidden service. Serve any local directory — its contents become accessible at a `.onion` address shown in the activity log. Requires Tor to be active (enforced automatically).
 
 </td>
 </tr>
 </table>
+
+---
+
+## Auto Circuit Renewal
+
+Entropy Shield can automatically rotate your Tor identity on a configurable interval without disconnecting.
+
+**Settings → General → Circuit Renewal (min)**
+
+| Value | Behaviour |
+|---|---|
+| `0` | Disabled (manual only via the **NEW CIRCUIT** button) |
+| `1–120` | Requests `SIGNAL NEWNYM` every N minutes via the Tor control port |
+
+When auto-renewal fires, a desktop notification confirms the new identity is active. The timer starts automatically when Tor connects and stops on disconnect or panic.
+
+---
+
+## Desktop Notifications
+
+Entropy Shield sends system tray notifications for events that happen in the background:
+
+| Event | Notification |
+|---|---|
+| Connected | Active privacy layers |
+| Kill switch triggered | Which service dropped |
+| Auto circuit renewal | New Tor identity active |
+
+Notifications are intentionally minimal — only events the user might otherwise miss while the window is minimised.
 
 ---
 
@@ -294,6 +331,11 @@ entropy-shield
 4. Optionally open **TOR BROWSER** or **I2P BROWSER** for an isolated Firefox window
 5. Click **DISCONNECT** to stop all services and restore your original system config
 
+**Rotating your Tor identity:**
+
+- Click **NEW CIRCUIT** at any time to get a new Tor exit node immediately
+- Or set **Settings → General → Circuit Renewal** to rotate automatically every N minutes
+
 **Setting up an Onion Server (.onion hidden service):**
 
 1. Open Settings → **ONION SERVER** tab
@@ -317,16 +359,25 @@ Settings are stored at `~/.config/entropy-shield/config.json` and editable via t
   "theme": "oled",
   "kill_switch": true,
   "auto_connect": false,
-  "autostart": false,
+  "autostart": true,
+  "auto_reconnect": {
+    "enabled": true,
+    "delay_seconds": 15,
+    "max_attempts": 3
+  },
+  "circuit_renewal_minutes": 0,
+  "mac_randomize": false,
+  "doh_block": true,
   "tor": {
     "trans_port": 9040,
     "dns_port": 5300,
     "socks_port": 9050,
+    "control_port": 9051,
     "exit_nodes": "",
     "strict_nodes": false
   },
   "dnscrypt": {
-    "port": 5353,
+    "port": 5380,
     "require_dnssec": false,
     "require_nolog": true,
     "require_nofilter": true
@@ -352,8 +403,12 @@ Restrict exit traffic to specific countries by entering ISO codes in **Settings 
 
 ```
 Exit Nodes:   {us},{de},{nl}
-Strict Nodes: ✓
+Strict Nodes: on
 ```
+
+### Circuit Renewal
+
+Configure automatic Tor identity rotation in **Settings → General → Circuit Renewal (min)**. Set to `0` to disable; any positive value rotates the circuit every N minutes. A desktop notification confirms each renewal.
 
 ### DNSCrypt Server Requirements
 
@@ -382,25 +437,29 @@ entropy-shield/
 ├── core/
 │   ├── config.py            # JSON config with deep-merge defaults
 │   ├── connection.py        # Orchestrates all layers (connect / disconnect)
-│   ├── tor.py               # torrc patching, DNS redirect, systemd control
+│   ├── tor.py               # torrc patching, DNS redirect, circuit renewal, control port
 │   ├── dnscrypt.py          # dnscrypt-proxy config, IPv6 listen, resolved integration
 │   ├── i2p.py               # i2pd config, redsocks transparent proxy, Tor-tunnel mode
 │   ├── onion_server.py      # Tor hidden service config + built-in HTTP file server
 │   ├── browser.py           # Isolated Firefox launcher (Tor / I2P profiles)
 │   ├── firewall.py          # nftables / iptables rules, IPv6 leak prevention
+│   ├── mac.py               # MAC address randomization (NetworkManager-compatible)
+│   ├── leak_test.py         # Tor exit, DNS, IPv6, WebRTC, timezone, hostname checks
 │   ├── autostart.py         # XDG autostart entry management
+│   ├── panic.py             # Emergency user-space disconnect
+│   ├── privileged_runner.py # Long-running root subprocess — receives commands via stdin
 │   └── tray_helper.py       # System tray subprocess (runs as real user)
 ├── gui/
-│   ├── main_window.py       # Main window, animated glow border, worker thread
+│   ├── main_window.py       # Main window, animated glow border, worker threads, notifications
 │   ├── settings_panel.py    # Slide-in settings overlay
 │   ├── themes.py            # 5-theme palette + QSS generation
 │   └── widgets.py           # ServiceCard, StatusRing, Spinner, ToggleSwitch, NetSpeedBar
-└── screenshots/
+└── logos/                   # Per-theme application icons
 ```
 
 ### How it Works
 
-Entropy Shield runs as root via `pkexec` to manage system services and firewall rules. The system tray helper runs as a subprocess under the original user's session to access the D-Bus session bus and register the SNI tray icon. Privacy browsers also run under the real user's identity with a temporary isolated profile at `/tmp/entropy-shield-ff-{tor,i2p}/`.
+Entropy Shield spawns a **privileged runner** (`core/privileged_runner.py`) via `pkexec` or passwordless `sudo` on connect. The runner owns the full connect/disconnect lifecycle as root and communicates with the GUI via stdin/stdout. The system tray helper runs as a separate subprocess under the original user's session to access the D-Bus session bus and register the SNI tray icon. Privacy browsers also run under the real user's identity with a temporary isolated profile at `/tmp/entropy-shield-ff-{tor,i2p}/`.
 
 **CONNECT flow:**
 1. Service configs are patched (originals backed up with `.entropy-shield.bak`)
@@ -408,6 +467,7 @@ Entropy Shield runs as root via `pkexec` to manage system services and firewall 
 3. Services are started via `systemctl restart`
 4. `systemd-resolved` is pointed at the active proxy via `resolvectl`
 5. `FirewallManager` applies nftables rules (Tor TransPort redirect, IPv6 drop, DNS redirect)
+6. MAC address is randomized if enabled (restored on disconnect)
 
 **DISCONNECT flow:**
 1. DNS settings restored via `resolvectl`
@@ -415,7 +475,8 @@ Entropy Shield runs as root via `pkexec` to manage system services and firewall 
 3. HTTP file server stopped
 4. All started services stopped
 5. Config files restored from `.entropy-shield.bak` backups
-6. System proxy environment variables cleared
+6. Original MAC addresses restored
+7. System proxy environment variables cleared
 
 ### DNS Leak Prevention
 
