@@ -498,6 +498,7 @@ Entropy Shield spawns a **privileged runner** (`core/privileged_runner.py`) via 
 | openSUSE Leap / Tumbleweed | `zypper` | |
 | NixOS | `nixos-rebuild` | Declarative module |
 
+
 ---
 
 ## Related Projects & Keywords
