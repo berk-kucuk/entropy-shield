@@ -8,7 +8,7 @@
 
 ### Linux Privacy Stack — Tor Transparent Proxy · DNSCrypt · I2P · Onion Server · GUI
 
-[![Website](https://img.shields.io/badge/Website-entropy--shield.berkkucukk.com-0f172a?style=flat-square&logo=googlechrome&logoColor=white)](https://entropy-shield.berkkucukk.com)
+[![Website](https://img.shields.io/badge/Website-entropy--shield.berkkucukk.com-0f172a?style=flat-square&logo=googlechrome&logoColor=white)](https://entropy-shield.berkkucukk.com.tr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![PyQt6](https://img.shields.io/badge/PyQt6-6.4%2B-41CD52?style=flat-square&logo=qt&logoColor=white)](https://pypi.org/project/PyQt6/)
@@ -39,7 +39,7 @@
 
 No more editing `torrc` by hand, writing nftables rules, or restarting systemd services manually. Entropy Shield handles everything and restores your original system config on disconnect.
 
-> **Website:** [entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)
+> **Website:** [entropy-shield.berkkucukk.com.tr](https://entropy-shield.berkkucukk.com.tr)
 
 ---
 
@@ -515,7 +515,7 @@ MIT © [Berk Küçük](https://berkkucukk.com)
 
 <div align="center">
 
-**[entropy-shield.berkkucukk.com](https://entropy-shield.berkkucukk.com)**
+**[entropy-shield.berkkucukk.com.tr](https://entropy-shield.berkkucukk.com.tr)**
 
 <sub>Built with Python · PyQt6 · Tor · DNSCrypt · I2P · Onion Server · nftables · Linux</sub>
 
