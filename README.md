@@ -128,7 +128,7 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 | **Tor bridge support** | obfs4, meek-azure, snowflake, and manual bridge lines |
 | **Real-time network speed** | Live download/upload bar while connected |
 | **Leak test suite** | Tor exit, DNS leak, IPv6 leak, WebRTC, timezone, hostname checks |
-| **Passwordless mode** | Write a sudoers entry for password-free connect/disconnect |
+| **Privileged daemon** | Root systemd service; the GUI drives it over a group-restricted Unix socket (no pkexec/sudoers) |
 | **Block DoH** | Block DNS-over-HTTPS to prevent apps from bypassing DNSCrypt |
 | **5 themes** | OLED, Light, Binary, Circuit, Pixel — with animated glow border |
 | **System tray** | Minimize to tray with quick Connect/Disconnect/Quit |
@@ -240,7 +240,7 @@ Switch themes at any time via **Settings → General → Theme**. The entire int
 - **OS:** Linux (systemd-based)
 - **Python:** 3.10 or later
 - **PyQt6:** 6.4 or later
-- **Privileges:** Root (via `pkexec` — polkit policy installed automatically)
+- **Privileges:** A root systemd daemon (`entropy-shield`) performs privileged operations; the GUI itself runs unprivileged and talks to it over a group-restricted Unix socket
 
 **Privacy service dependencies** (installed automatically by the installer):
 
@@ -272,7 +272,8 @@ The installer handles:
 - Package installation per distro (pacman / apt / dnf / zypper / nix)
 - PyQt6 via system package with pip fallback (PEP 668 compliant)
 - Desktop entry, application icon, launcher at `/usr/local/bin/entropy-shield`
-- Polkit policy so `pkexec` works without repeated password prompts
+- Root-owned install under `/opt/entropy-shield` (the user cannot modify code the daemon runs)
+- The `entropy-shield` group + adds you to it, and enables the privileged daemon
 - SELinux context labels on Fedora / RHEL
 - NixOS module generation + `nixos-rebuild switch`
 - Clean reinstall support
@@ -308,11 +309,20 @@ imports = [ ./entropy-shield.nix ];
 
 ### Manual / Development
 
+The GUI runs **unprivileged**; the privileged daemon runs as **root** in a
+separate process. In development you can start each by hand:
+
 ```bash
 git clone https://github.com/berkkucukk/entropy-shield.git
 cd entropy-shield
 pip install PyQt6
-sudo python3 main.py
+
+# Terminal 1 — privileged daemon (root). Add yourself to the group first so the
+# GUI can reach the socket:  sudo groupadd -f entropy-shield && sudo usermod -aG entropy-shield "$USER"  (then re-login)
+sudo python3 core/daemon.py
+
+# Terminal 2 — GUI as your normal user
+python3 main.py
 ```
 
 ---
@@ -432,7 +442,7 @@ Configure automatic Tor identity rotation in **Settings → General → Circuit 
 
 ```
 entropy-shield/
-├── main.py                  # Entry point — privilege escalation via pkexec
+├── main.py                  # Entry point — GUI (user) or `--service` (root daemon)
 ├── install.sh               # Universal distro-detecting installer
 ├── core/
 │   ├── config.py            # JSON config with deep-merge defaults
@@ -447,7 +457,8 @@ entropy-shield/
 │   ├── leak_test.py         # Tor exit, DNS, IPv6, WebRTC, timezone, hostname checks
 │   ├── autostart.py         # XDG autostart entry management
 │   ├── panic.py             # Emergency user-space disconnect
-│   ├── privileged_runner.py # Long-running root subprocess — receives commands via stdin
+│   ├── daemon.py            # Root systemd daemon — serves validated commands over a Unix socket
+│   ├── daemon_client.py     # GUI-side thin client for the daemon socket
 │   └── tray_helper.py       # System tray subprocess (runs as real user)
 ├── gui/
 │   ├── main_window.py       # Main window, animated glow border, worker threads, notifications
@@ -459,7 +470,9 @@ entropy-shield/
 
 ### How it Works
 
-Entropy Shield spawns a **privileged runner** (`core/privileged_runner.py`) via `pkexec` or passwordless `sudo` on connect. The runner owns the full connect/disconnect lifecycle as root and communicates with the GUI via stdin/stdout. The system tray helper runs as a separate subprocess under the original user's session to access the D-Bus session bus and register the SNI tray icon. Privacy browsers also run under the real user's identity with a temporary isolated profile at `/tmp/entropy-shield-ff-{tor,i2p}/`.
+Entropy Shield runs a **privileged daemon** (`core/daemon.py`) as a root systemd service (`entropy-shield`). The unprivileged GUI connects to its Unix socket at `/run/entropy-shield/daemon.sock` and sends a small, fixed set of **validated** commands (connect / disconnect / new_circuit / circuit_info / panic / status); the daemon never executes code supplied by the client. The socket is `root:entropy-shield` mode `0660`, so only members of the `entropy-shield` group may connect — the installer adds you to that group. Because the root code lives under root-owned `/opt/entropy-shield` and the trust boundary is the tiny socket protocol, there is **no pkexec, no passwordless-sudo, and no privilege-escalation vector** where a writable script runs as root.
+
+The daemon identifies the connecting user from the socket peer credentials (`SO_PEERCRED`) and reads *that* user's `~/.config/entropy-shield` settings. The system tray helper runs as a separate subprocess under the original user's session to access the D-Bus session bus and register the SNI tray icon. Privacy browsers also run under the real user's identity with a temporary isolated profile at `/tmp/entropy-shield-ff-{tor,i2p}/`.
 
 **CONNECT flow:**
 1. Service configs are patched (originals backed up with `.entropy-shield.bak`)

@@ -35,19 +35,18 @@ def main() -> None:
         print("Entropy Shield is already running.")
         sys.exit(0)
 
-    # Headless / systemd service mode: hand off to the privileged runner.
+    # Headless / systemd service mode: run the privileged daemon directly.
+    # This must be invoked as root (systemd does this); it no longer shells out
+    # to sudo/pkexec.  The desktop GUI talks to this daemon over its socket.
     if "--service" in sys.argv or "--headless" in sys.argv:
-        import subprocess, shutil
-        runner = os.path.join(os.path.dirname(__file__), "core", "privileged_runner.py")
-        cmd: list[str]
-        if shutil.which("sudo"):
-            cmd = ["sudo", sys.executable, runner, "--headless"]
-        elif shutil.which("pkexec"):
-            cmd = ["pkexec", sys.executable, runner, "--headless"]
-        else:
-            print("ERROR: sudo or pkexec required for headless mode.")
+        if os.geteuid() != 0:
+            print("ERROR: headless/service mode must run as root.\n"
+                  "Use the systemd service instead:\n"
+                  "    sudo systemctl enable --now entropy-shield")
             sys.exit(1)
-        os.execvp(cmd[0], cmd)  # replace current process
+        from core.daemon import main as daemon_main
+        daemon_main()
+        return
 
     # Only force QT_QPA_PLATFORM when neither Wayland nor X11 is set in env.
     if not os.environ.get("QT_QPA_PLATFORM"):

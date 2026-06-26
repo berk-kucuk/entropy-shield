@@ -1,15 +1,19 @@
 [Unit]
-Description=Entropy Shield — Network Privacy (Headless)
+Description=Entropy Shield — Privileged Network Privacy Daemon
 Documentation=https://github.com/berk-kucuk/entropy-shield
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/entropy-shield/core/privileged_runner.py --headless
+ExecStart=/usr/bin/python3 /opt/entropy-shield/core/daemon.py
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=10
+# systemd creates /run/entropy-shield (root-owned 0750); the daemon tightens the
+# socket to root:entropy-shield 0660 so only group members may connect.
+RuntimeDirectory=entropy-shield
+RuntimeDirectoryMode=0750
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=entropy-shield

@@ -115,3 +115,22 @@ def cfg() -> Config:
     if _instance is None:
         _instance = Config()
     return _instance
+
+
+def use_user_config(uid: int) -> None:
+    """Rebind the config location to *uid*'s home directory.
+
+    The privileged daemon runs as root, so ``Path.home()`` would resolve to
+    ``/root`` and it would ignore the desktop user's GUI settings.  The daemon
+    learns the connecting user's uid from the socket peer credentials and calls
+    this so it reads ``~user/.config/entropy-shield/config.json`` instead.
+    """
+    global _DIR, _FILE, _instance
+    import pwd
+    try:
+        home = Path(pwd.getpwuid(uid).pw_dir)
+    except KeyError:
+        return
+    _DIR  = home / ".config" / "entropy-shield"
+    _FILE = _DIR / "config.json"
+    _instance = None  # force reload from the new location on next cfg()

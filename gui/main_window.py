@@ -5,7 +5,6 @@ import math
 import json
 import random as _random
 import select
-import shutil
 import subprocess
 import datetime
 from pathlib import Path
@@ -33,30 +32,7 @@ from core.updater import VERSION
 import core.browser as browser
 import core.autostart as autostart
 
-_RUNNER_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "core", "privileged_runner.py",
-)
-_SUDOERS_FILE = "/etc/sudoers.d/entropy-shield"
-
-
-def _runner_cmd() -> list[str]:
-    """Return command to launch the privileged runner (best available method)."""
-    # Prefer passwordless sudo when the sudoers entry exists
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", "-l", sys.executable, _RUNNER_PATH],
-            capture_output=True, timeout=2,
-        )
-        if r.returncode == 0:
-            return ["sudo", "-n", sys.executable, _RUNNER_PATH]
-    except Exception:
-        pass
-    # Fall back to pkexec (shows polkit auth dialog)
-    if shutil.which("pkexec"):
-        return ["pkexec", sys.executable, _RUNNER_PATH]
-    # Last resort: sudo with terminal prompt
-    return ["sudo", sys.executable, _RUNNER_PATH]
+from core.daemon_client import DaemonClient, DaemonError
 
 _LOGOS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logos"
@@ -202,12 +178,12 @@ class _Worker(QThread):
     done = pyqtSignal(bool, str)
 
     def __init__(self, action: str, layers: dict,
-                 runner_proc: "subprocess.Popen | None" = None):
+                 runner_proc: "DaemonClient | None" = None):
         super().__init__()
         self._action      = action
         self._layers      = layers
         self._runner      = runner_proc
-        self.new_runner: "subprocess.Popen | None" = None  # set on connect success
+        self.new_runner: "DaemonClient | None" = None  # set on connect success
 
     def run(self) -> None:
         try:
@@ -222,30 +198,25 @@ class _Worker(QThread):
     # ── connect ───────────────────────────────────────────────
 
     def _do_connect(self) -> None:
-        proc = subprocess.Popen(
-            _runner_cmd(),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            proc = DaemonClient.connect()
+        except DaemonError as exc:
+            raise RuntimeError(str(exc))
 
-        # Wait for runner to confirm root was obtained (polkit dialog may take time)
+        # Wait for the daemon to confirm the session is ready.
         while True:
             raw = proc.stdout.readline()
             if not raw:
-                code = proc.wait()
-                if code == 126:
-                    raise RuntimeError(
-                        "Authentication cancelled.")
+                proc.close()
                 raise RuntimeError(
-                    f"Privileged process failed to start (exit code: {code}).")
+                    "Privileged daemon closed the connection during startup.")
             line = raw.decode(errors="replace").rstrip()
             if line:
                 self.log.emit(line)   # show HEAL and startup messages in the GUI
             if line == "[RUNNER] started":
                 break
             if "[ERR]" in line:
-                proc.wait()
+                proc.close()
                 raise RuntimeError(line)
 
         self.new_runner = proc
@@ -295,11 +266,9 @@ class _Worker(QThread):
                 break
             if proc.poll() is not None:
                 break
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        # Closing the socket ends the daemon-side session and is itself a safe
+        # disconnect (the daemon rolls back on EOF).
+        proc.close()
 
 
 # ── Panic worker ─────────────────────────────────────────────
@@ -307,7 +276,7 @@ class _Worker(QThread):
 class _PanicWorker(QThread):
     done = pyqtSignal(str)
 
-    def __init__(self, runner_proc: "subprocess.Popen | None"):
+    def __init__(self, runner_proc: "DaemonClient | None"):
         super().__init__()
         self._runner = runner_proc
 
@@ -333,6 +302,8 @@ class _PanicWorker(QThread):
                         break
             except Exception as exc:
                 msgs.append(f"[PANIC] Error: {exc}")
+            finally:
+                self._runner.close()
         else:
             # Runner not running — cannot remove firewall rules without root.
             # The next runner launch (on reconnect) runs _startup_heal() which
@@ -430,7 +401,7 @@ class _HealthCheckWorker(QThread):
 class _CircuitInfoWorker(QThread):
     result = pyqtSignal(dict)
 
-    def __init__(self, runner_proc: "subprocess.Popen"):
+    def __init__(self, runner_proc: "DaemonClient"):
         super().__init__()
         self._runner = runner_proc
 
@@ -505,7 +476,7 @@ class _UpdateCheckWorker(QThread):
 class _NewCircuitWorker(QThread):
     result = pyqtSignal(str)
 
-    def __init__(self, runner_proc: "subprocess.Popen"):
+    def __init__(self, runner_proc: "DaemonClient"):
         super().__init__()
         self._runner = runner_proc
 
@@ -991,7 +962,7 @@ class MainWindow(QMainWindow):
         self._update_worker:   _UpdateCheckWorker | None = None
         self._circuit_worker:  _CircuitInfoWorker | None = None
         self._health_worker:   _HealthCheckWorker | None = None
-        self._runner_proc:     subprocess.Popen | None   = None
+        self._runner_proc:     "DaemonClient | None"     = None
         self._active_layers:   list[str]                 = []
 
         # Connection metadata for richer status display
@@ -1051,6 +1022,12 @@ class MainWindow(QMainWindow):
         self._build_tray()
         self._append_log(f"[>] Entropy Shield v{VERSION} ready.")
 
+        # Warn early (before the user even clicks Connect) if the privileged
+        # daemon is unreachable — most commonly because the user has not logged
+        # out/in since install, so their 'entropy-shield' group membership is
+        # not active yet.  Deferred so the window paints first.
+        QTimer.singleShot(600, self._check_daemon_ready)
+
         # Kick off update check after a short delay so UI is fully ready
         QTimer.singleShot(3000, self._run_update_check)
 
@@ -1062,6 +1039,34 @@ class MainWindow(QMainWindow):
 
         if cfg().get("auto_connect"):
             QTimer.singleShot(1600, self._auto_connect)
+
+    def _check_daemon_ready(self) -> None:
+        """Surface a clear warning if the privileged daemon can't be reached.
+
+        Runs once shortly after launch so the user is told *why* Connect would
+        fail (re-login needed, or daemon not started) instead of only finding
+        out when they click Connect.
+        """
+        try:
+            client = DaemonClient.connect(timeout=2.0)
+            client.close()
+            return  # daemon reachable — all good, stay quiet
+        except DaemonError as exc:
+            msg = str(exc)
+
+        if "group" in msg:
+            self._append_log(
+                "[!] Privileged daemon unreachable — you are not in the "
+                "'entropy-shield' group yet. Log out and back in (or reboot), "
+                "then reopen Entropy Shield. Connect will fail until then.")
+            self._set_status("error", "RE-LOGIN NEEDED",
+                             "Not in 'entropy-shield' group yet")
+        else:
+            self._append_log(
+                "[!] Privileged daemon is not running. Start it with:  "
+                "sudo systemctl enable --now entropy-shield")
+            self._set_status("error", "DAEMON OFFLINE",
+                             "Privileged backend unreachable")
 
     # ── glow ──────────────────────────────────────────────────
 

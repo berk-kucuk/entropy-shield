@@ -1,7 +1,4 @@
 from __future__ import annotations
-import os
-import sys
-import subprocess
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QScrollArea,
@@ -17,26 +14,27 @@ from PyQt6.QtGui import QPainter, QColor, QLinearGradient
 from gui.themes import current as theme
 from gui.widgets import ToggleSwitch
 from core.config import cfg
+from core.daemon_client import DaemonClient, DaemonError
 import core.autostart as autostart
 
-_RUNNER_PATH  = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "core", "privileged_runner.py",
-)
-_SUDOERS_FILE = "/etc/sudoers.d/entropy-shield"
 
+def _daemon_status() -> str:
+    """Return a human-readable status of the root privileged daemon.
 
-def _nopasswd_active() -> bool:
-    # Cannot check /etc/sudoers.d/ directly (chmod 750 root:root blocks stat).
-    # Ask sudo itself whether the command is allowed without a password.
+    Privileged operations no longer use pkexec/sudo; they go through a root
+    systemd daemon over a group-restricted Unix socket.  This is a read-only
+    indicator — there is no passwordless toggle to flip anymore.
+    """
     try:
-        r = subprocess.run(
-            ["sudo", "-n", "-l", sys.executable, _RUNNER_PATH],
-            capture_output=True, timeout=2,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+        client = DaemonClient.connect(timeout=2.0)
+        client.close()
+        return "Daemon: active ✓  (privileged ops run over the socket)"
+    except DaemonError as exc:
+        if "group" in str(exc):
+            return ("Daemon: running, but you are NOT in the 'entropy-shield' "
+                    "group — log out and back in after installing.")
+        return ("Daemon: not running — start with "
+                "'sudo systemctl enable --now entropy-shield'.")
 
 _MARGIN = 14   # equal margin on all four sides of the settings card
 
@@ -441,7 +439,7 @@ class SettingsPanel(QWidget):
         lay.addLayout(self._row("Block DoH",        self._doh_block_toggle))
         lay.addSpacing(8)
         lay.addWidget(self._section("PRIVILEGE"))
-        lay.addLayout(self._row("Auth Mode", self._auth_btn))
+        lay.addLayout(self._row("Daemon", self._auth_btn))
 
         note = QLabel(
             "Kill Switch: if a privacy service drops, emergency disconnect.\n\n"
@@ -455,9 +453,10 @@ class SettingsPanel(QWidget):
             "restore on disconnect. Requires iproute2.\n\n"
             "Block DoH: block DNS-over-HTTPS to known resolvers in DNSCrypt\n"
             "mode so apps cannot bypass dnscrypt-proxy (port 443 drops).\n\n"
-            "Auth Mode: when Passwordless is OFF, connect/disconnect\n"
-            "asks for your sudo password via pkexec.\n"
-            "Enable to write a sudoers entry for password-free operation."
+            "Daemon: privileged operations run through a root systemd service\n"
+            "(entropy-shield) over a group-restricted Unix socket — no pkexec or\n"
+            "sudoers entry. Your user must be in the 'entropy-shield' group.\n"
+            "Click the status to re-check."
         )
         note.setObjectName("settingLabel")
         note.setWordWrap(True)
@@ -468,37 +467,10 @@ class SettingsPanel(QWidget):
         return w
 
     def _refresh_auth_btn(self) -> None:
-        if _nopasswd_active():
-            self._auth_btn.setText("Passwordless: ON  (click to disable)")
-        else:
-            self._auth_btn.setText("Passwordless: OFF  (click to enable)")
+        self._auth_btn.setText(_daemon_status())
 
     def _on_auth_toggled(self) -> None:
-        username = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
-        if not _nopasswd_active() and not username:
-            self._auth_btn.setText("Cannot enable: $USER not set in environment.")
-            QTimer.singleShot(3000, self._refresh_auth_btn)
-            return
-        if _nopasswd_active():
-            cmd = ["pkexec", sys.executable, _RUNNER_PATH, "--remove-nopasswd"]
-        else:
-            cmd = ["pkexec", sys.executable, _RUNNER_PATH,
-                   "--setup-nopasswd", username, sys.executable, _RUNNER_PATH]
-
-        self._auth_btn.setEnabled(False)
-        self._auth_btn.setText("Waiting for authentication…")
-
-        import threading
-        def _run():
-            subprocess.run(cmd, capture_output=True, timeout=60)
-            # Refresh button in the GUI thread
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, self._on_auth_done)
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _on_auth_done(self) -> None:
-        self._auth_btn.setEnabled(True)
+        # Read-only indicator: clicking just re-checks the daemon status.
         self._refresh_auth_btn()
 
     # ── populate / save ───────────────────────────────────────

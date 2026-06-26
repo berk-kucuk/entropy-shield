@@ -1,9 +1,10 @@
 from __future__ import annotations
 import os
+import sys
 import pwd
 import time
+import subprocess
 import threading
-from http.server import HTTPServer, SimpleHTTPRequestHandler
 from typing import Callable
 
 from .config import cfg
@@ -13,39 +14,34 @@ _MARKER_BEGIN = "# --- entropy-shield-hs-begin ---"
 _MARKER_END   = "# --- entropy-shield-hs-end ---"
 
 
-def _real_user_home() -> str:
-    """Return the home directory of the invoking user (before sudo/pkexec)."""
+def _invoking_uid() -> int | None:
+    """Return the uid of the desktop user that asked for this connection.
+
+    The privileged daemon exposes it via SUDO_UID (set from the socket peer
+    credentials); the legacy pkexec path used PKEXEC_UID.
+    """
     for var in ("PKEXEC_UID", "SUDO_UID"):
         val = os.environ.get(var)
         if val and val.isdigit():
-            try:
-                return pwd.getpwuid(int(val)).pw_dir
-            except KeyError:
-                pass
+            return int(val)
+    return None
+
+
+def _real_user_home() -> str:
+    """Return the home directory of the invoking user (before sudo/pkexec)."""
+    uid = _invoking_uid()
+    if uid is not None:
+        try:
+            return pwd.getpwuid(uid).pw_dir
+        except KeyError:
+            pass
     return os.path.expanduser("~")
-
-
-class _QuietHandler(SimpleHTTPRequestHandler):
-    """SimpleHTTPRequestHandler without request logs or keep-alive."""
-    # Per-connection inactivity timeout so shutdown() never waits more
-    # than this many seconds for an idle client to close.
-    timeout = 5
-
-    def log_message(self, *_args) -> None:
-        pass
-
-    def handle_one_request(self) -> None:
-        super().handle_one_request()
-        # Force-close after each request so shutdown() doesn't block
-        # waiting for a browser's persistent keep-alive connection.
-        self.close_connection = True
 
 
 class OnionServerManager:
     def __init__(self, log: Callable[[str], None]):
-        self._log        = log
-        self._httpd:     HTTPServer | None  = None
-        self._thread:    threading.Thread | None = None
+        self._log   = log
+        self._proc: "subprocess.Popen | None" = None
 
     # ── torrc config ──────────────────────────────────────────
 
@@ -94,38 +90,85 @@ class OnionServerManager:
             raise RuntimeError(
                 f"Serve directory does not exist: {serve_dir}")
 
-        import functools
-        handler = functools.partial(_QuietHandler, directory=serve_dir)
+        # SECURITY: the file server is run as the *invoking desktop user*, never
+        # as root.  Otherwise a user could point serve_dir at /root, /etc, … and
+        # read root-only files (e.g. /etc/shadow) over 127.0.0.1 — a privilege
+        # escalation.  Running it dropped to their uid means the server can only
+        # read what that user can already read.
+        cmd = [
+            sys.executable, "-m", "http.server", str(local_port),
+            "--bind", "127.0.0.1", "--directory", serve_dir,
+        ]
+
+        popen_kwargs: dict = dict(
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+
+        uid = _invoking_uid()
+        dropped = False
+        if os.geteuid() == 0:
+            if uid is not None and uid > 0:
+                try:
+                    gid = pwd.getpwuid(uid).pw_gid
+                except KeyError:
+                    raise RuntimeError(
+                        f"Cannot resolve invoking user (uid {uid}).")
+                # user=/group= require Python 3.9+ (project targets 3.10+).
+                popen_kwargs["user"]  = uid
+                popen_kwargs["group"] = gid
+                dropped = True
+            else:
+                # No identifiable desktop user — refuse to expose files as root.
+                self._log(
+                    "[ONION] WARNING: could not identify the invoking user; "
+                    "refusing to serve files as root.")
+                raise RuntimeError(
+                    "Onion server: cannot drop privileges (no invoking user).")
 
         try:
-            self._httpd = HTTPServer(("127.0.0.1", local_port), handler)
+            self._proc = subprocess.Popen(cmd, **popen_kwargs)
         except OSError as exc:
             raise RuntimeError(
-                f"Cannot bind HTTP server on port {local_port}: {exc}") from exc
+                f"Cannot start onion HTTP server: {exc}") from exc
 
-        self._thread = threading.Thread(
-            target=self._httpd.serve_forever, daemon=True)
-        self._thread.start()
+        # Give it a moment to fail fast (e.g. port in use, privileged port the
+        # dropped user cannot bind) and surface a clear error.
+        time.sleep(0.3)
+        if self._proc.poll() is not None:
+            err = ""
+            try:
+                err = (self._proc.stderr.read() or b"").decode(errors="replace").strip()
+            except Exception:
+                pass
+            self._proc = None
+            raise RuntimeError(
+                f"Onion HTTP server failed to bind 127.0.0.1:{local_port}"
+                + (f" — {err.splitlines()[-1]}" if err else "")
+                + (". Use a port ≥ 1024." if local_port < 1024 else ""))
+
+        who = f"as uid {uid}" if dropped else "as current user"
         self._log(
-            f"[ONION] HTTP server started on 127.0.0.1:{local_port}"
+            f"[ONION] HTTP server started on 127.0.0.1:{local_port} ({who})"
             f" — serving: {serve_dir}"
         )
 
     def stop(self) -> None:
-        httpd,         self._httpd  = self._httpd,  None
-        thread,        self._thread = self._thread, None
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
 
-        if httpd is not None:
-            # shutdown() blocks until serve_forever() exits.  Run it in a
-            # background thread so the caller (the Qt disconnect worker)
-            # is not frozen while an open browser connection drains.
-            def _bg():
+        def _bg():
+            try:
+                proc.terminate()
                 try:
-                    httpd.shutdown()
-                    httpd.server_close()
-                except Exception:
-                    pass
-            threading.Thread(target=_bg, daemon=True).start()
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            except Exception:
+                pass
+        threading.Thread(target=_bg, daemon=True).start()
 
         self._log("[ONION] HTTP server stopped.")
 

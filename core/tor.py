@@ -17,6 +17,20 @@ _DATA_DIR = "/run/entropy-shield/tor-data"
 # Exported so onion_server.py can append HiddenService config to our torrc.
 TORRC = _TORRC_PATH
 
+
+def _torrc_safe(value: str) -> str:
+    """Strip newlines/CRs from a user-supplied value before it enters torrc.
+
+    SECURITY: the privileged daemon reads these values from the *desktop user's*
+    config file (which they fully control) and writes them to a torrc that Tor —
+    potentially running as root — then parses.  An embedded newline would let a
+    user inject an arbitrary torrc directive such as
+    ``ClientTransportPlugin x exec /tmp/evil``, which Tor would execute.  Keeping
+    every value on a single line confines it to the directive it belongs to; a
+    malformed value simply fails ``tor --verify-config`` and never runs code.
+    """
+    return value.replace("\r", " ").replace("\n", " ")
+
 _TORRC_TEMPLATE = """\
 # entropy-shield — auto-generated, do not edit
 DataDirectory {data_dir}
@@ -87,7 +101,7 @@ class TorManager:
         dns     = cfg().get("tor", "dns_port")
         socks   = cfg().get("tor", "socks_port")
         ctrl    = cfg().get("tor", "control_port")
-        exits   = cfg().get("tor", "exit_nodes").strip()
+        exits   = _torrc_safe(cfg().get("tor", "exit_nodes").strip())
         strict  = cfg().get("tor", "strict_nodes")
 
         # ── bridge / pluggable transport ─────────────────────────
@@ -231,7 +245,9 @@ class TorManager:
             lines.append(f"ClientTransportPlugin {pt_cmds[transport]}")
 
         for bl in lines_raw:
-            bl = bl.strip()
+            # SECURITY: confine each bridge entry to a single line so a malicious
+            # config cannot inject extra torrc directives (e.g. an exec plugin).
+            bl = _torrc_safe(bl).strip()
             if bl and not bl.startswith("#"):
                 if not bl.lower().startswith("bridge"):
                     bl = "Bridge " + bl
