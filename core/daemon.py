@@ -160,7 +160,18 @@ def _setup_socket() -> socket.socket:
     import grp, stat
 
     os.makedirs(RUNTIME_DIR, exist_ok=True)
-    # Directory: root:entropy-shield 0750 (group may traverse, world may not).
+    # Directory: root:entropy-shield 0751 (group may traverse AND list; world may
+    # only traverse *by name*, not list — 'x' without 'r').  The daemon socket's
+    # own access control is its 0660 root:entropy-shield file mode, checked
+    # independently on connect(), so this bit does not widen who can reach it.
+    #
+    # The 'x' bit is required so that privilege-dropped children (e.g. Tor,
+    # started here as root but configured with "User tor" — see core/tor.py)
+    # can stat()/open() their own subdirectory under RUNTIME_DIR (e.g.
+    # tor-data/, chowned to the 'tor' system user).  That system user is not a
+    # member of 'entropy-shield', so without world-traverse it cannot even
+    # reach a directory it privately owns, and fails with a confusing
+    # "Permission denied" trying to read its own DataDirectory.
     try:
         gid = grp.getgrnam(SOCKET_GROUP).gr_gid
     except KeyError:
@@ -170,7 +181,7 @@ def _setup_socket() -> socket.socket:
         )
     try:
         os.chown(RUNTIME_DIR, 0, gid)
-        os.chmod(RUNTIME_DIR, 0o750)
+        os.chmod(RUNTIME_DIR, 0o751)
     except OSError:
         pass
 

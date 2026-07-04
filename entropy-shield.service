@@ -10,10 +10,12 @@ ExecStart=/usr/bin/python3 /opt/entropy-shield/core/daemon.py
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=10
-# systemd creates /run/entropy-shield (root-owned 0750); the daemon tightens the
-# socket to root:entropy-shield 0660 so only group members may connect.
+# systemd creates /run/entropy-shield (root-owned 0751; 'x' lets privilege-
+# dropped children like Tor's "User tor" reach their own subdirectory without
+# widening the daemon socket's access, which is gated by the socket's own
+# root:entropy-shield 0660 mode — see core/daemon.py:_setup_socket()).
 RuntimeDirectory=entropy-shield
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=0751
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=entropy-shield
