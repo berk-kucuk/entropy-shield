@@ -7,7 +7,7 @@ _DESKTOP_CONTENT = """\
 [Desktop Entry]
 Name=Entropy Shield
 Comment=Network Privacy Stack — Tor, DNSCrypt, I2P
-Exec=entropy-shield
+Exec=entropy-shield --tray
 Icon=/usr/share/pixmaps/entropy-shield.png
 Type=Application
 Categories=Network;Security;

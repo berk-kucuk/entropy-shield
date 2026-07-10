@@ -262,104 +262,116 @@ def _handle_client(conn: socket.socket) -> None:
     mgr: "ConnectionManager | None" = None
     connected = False
 
-    with _session_lock:
-        _log("[RUNNER] started")
+    try:
+        with _session_lock:
+            _log("[RUNNER] started")
 
-        while True:
-            raw = rfile.readline()
-            if not raw:
-                # Client disconnected — always clean up whatever mgr touched,
-                # regardless of whether connect() fully succeeded.
-                if mgr is not None:
+            while True:
+                raw = rfile.readline()
+                if not raw:
+                    # Client disconnected — always clean up whatever mgr touched,
+                    # regardless of whether connect() fully succeeded.
+                    if mgr is not None:
+                        try:
+                            mgr.disconnect()
+                        except Exception:
+                            pass
+                    return
+
+                cmd = raw.decode(errors="replace").strip()
+                if not cmd:
+                    continue
+
+                # ── ping ──────────────────────────────────────────────────────
+                if cmd == "ping":
+                    _log("[OK] pong")
+
+                # ── connect ───────────────────────────────────────────────────
+                elif cmd.startswith("connect "):
                     try:
-                        mgr.disconnect()
-                    except Exception:
-                        pass
-                return
-
-            cmd = raw.decode(errors="replace").strip()
-            if not cmd:
-                continue
-
-            # ── ping ──────────────────────────────────────────────────────────
-            if cmd == "ping":
-                _log("[OK] pong")
-
-            # ── connect ───────────────────────────────────────────────────────
-            elif cmd.startswith("connect "):
-                try:
-                    params = json.loads(cmd[8:])
-                    if not isinstance(params, dict):
-                        raise ValueError("connect payload must be a JSON object")
-                    # Whitelist: ignore any unexpected keys, coerce to bool.
-                    safe = {
-                        k: bool(params.get(k, False))
-                        for k in _ALLOWED_CONNECT_KEYS
-                    }
-                    mgr = ConnectionManager(_log)
-                    mgr.connect(**safe)
-                    connected = True
-                except Exception as exc:
-                    # connect() rolls back internally; keep the session alive so
-                    # the GUI can send disconnect to confirm a clean state.
-                    _log(f"[ERR] {exc}")
-
-            # ── disconnect ────────────────────────────────────────────────────
-            elif cmd == "disconnect":
-                if mgr is not None:
-                    try:
-                        mgr.disconnect()
+                        params = json.loads(cmd[8:])
+                        if not isinstance(params, dict):
+                            raise ValueError("connect payload must be a JSON object")
+                        # Whitelist: ignore any unexpected keys, coerce to bool.
+                        safe = {
+                            k: bool(params.get(k, False))
+                            for k in _ALLOWED_CONNECT_KEYS
+                        }
+                        mgr = ConnectionManager(_log)
+                        mgr.connect(**safe)
+                        connected = True
                     except Exception as exc:
+                        # connect() rolls back internally; keep the session alive
+                        # so the GUI can send disconnect to confirm a clean state.
                         _log(f"[ERR] {exc}")
-                connected = False
-                return
 
-            # ── new_circuit ───────────────────────────────────────────────────
-            elif cmd == "new_circuit":
-                if mgr is None or not connected:
-                    _log("[ERR] Tor is not connected.")
-                    continue
-                try:
-                    mgr._tor.new_circuit()
-                    _log("[TOR] New Tor circuit requested.")
-                except Exception as exc:
-                    _log(f"[ERR] Circuit renewal failed: {exc}")
+                # ── disconnect ────────────────────────────────────────────────
+                elif cmd == "disconnect":
+                    if mgr is not None:
+                        try:
+                            mgr.disconnect()
+                        except Exception as exc:
+                            _log(f"[ERR] {exc}")
+                    connected = False
+                    return
 
-            # ── circuit_info ──────────────────────────────────────────────────
-            elif cmd == "circuit_info":
-                if mgr is None or not connected:
-                    _log("[CIRCUIT] {}")
-                    continue
-                try:
-                    info = mgr._tor.get_circuit_info()
-                    _log(f"[CIRCUIT] {json.dumps(info)}")
-                except Exception:
-                    _log("[CIRCUIT] {}")
-
-            # ── status ────────────────────────────────────────────────────────
-            elif cmd == "status":
-                state = {"connected": connected,
-                         "layers": getattr(mgr, "_layers", {}) if mgr else {}}
-                _log(f"[STATUS] {json.dumps(state)}")
-
-            # ── panic ─────────────────────────────────────────────────────────
-            elif cmd == "panic":
-                _log("[PANIC] Emergency disconnect…")
-                if mgr is not None:
+                # ── new_circuit ───────────────────────────────────────────────
+                elif cmd == "new_circuit":
+                    if mgr is None or not connected:
+                        _log("[ERR] Tor is not connected.")
+                        continue
                     try:
-                        mgr.disconnect()
-                        connected = False
+                        mgr._tor.new_circuit()
+                        _log("[TOR] New Tor circuit requested.")
                     except Exception as exc:
-                        _log(f"[PANIC] Disconnect error: {exc}")
-                        _force_remove_firewall()
-                else:
-                    _force_remove_firewall()
-                _log("[PANIC] Connection closed.")
-                return
+                        _log(f"[ERR] Circuit renewal failed: {exc}")
 
-            # ── unknown ───────────────────────────────────────────────────────
-            else:
-                _log("[ERR] unknown command")
+                # ── circuit_info ──────────────────────────────────────────────
+                elif cmd == "circuit_info":
+                    if mgr is None or not connected:
+                        _log("[CIRCUIT] {}")
+                        continue
+                    try:
+                        info = mgr._tor.get_circuit_info()
+                        _log(f"[CIRCUIT] {json.dumps(info)}")
+                    except Exception:
+                        _log("[CIRCUIT] {}")
+
+                # ── status ────────────────────────────────────────────────────
+                elif cmd == "status":
+                    state = {"connected": connected,
+                             "layers": getattr(mgr, "_layers", {}) if mgr else {}}
+                    _log(f"[STATUS] {json.dumps(state)}")
+
+                # ── panic ─────────────────────────────────────────────────────
+                elif cmd == "panic":
+                    _log("[PANIC] Emergency disconnect…")
+                    if mgr is not None:
+                        try:
+                            mgr.disconnect()
+                            connected = False
+                        except Exception as exc:
+                            _log(f"[PANIC] Disconnect error: {exc}")
+                            _force_remove_firewall()
+                    else:
+                        _force_remove_firewall()
+                    _log("[PANIC] Connection closed.")
+                    return
+
+                # ── unknown ───────────────────────────────────────────────────
+                else:
+                    _log("[ERR] unknown command")
+    finally:
+        # Close the socket file objects now so their buffered writers are not
+        # finalized later against an already-closed fd.  That finalization
+        # raised a noisy "Exception ignored while finalizing file … BrokenPipe"
+        # in the journal on every client disconnect — harmless to the daemon,
+        # but alarming and wrong.  Closing here also flushes any pending output.
+        for _f in (wfile, rfile):
+            try:
+                _f.close()
+            except Exception:
+                pass
 
 
 def _force_remove_firewall() -> None:

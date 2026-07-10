@@ -81,6 +81,16 @@ distro_is() {
     [[ "$DISTRO_ID" == "$1" ]] || echo "$DISTRO_LIKE" | grep -qw "$1"
 }
 
+# Every supported install path relies on systemd: the privileged daemon runs as
+# a systemd service and /run/entropy-shield is created via its RuntimeDirectory=
+# directive.  Bail out early (and clearly) on non-systemd init systems.
+require_systemd() {
+    if [[ ! -d /run/systemd/system ]]; then
+        die "Your system does not use systemd, which is required by Entropy Shield.
+Non-systemd init systems (OpenRC, runit, s6, SysVinit, etc.) are not supported."
+    fi
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  UNINSTALL
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,6 +218,47 @@ PYEOF
 #  INSTALL — per-distro package setup
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Install a single package with the given package manager. Returns the package
+# manager's own exit status so callers can react to failures.
+_pm_install_one() {
+    local pm="$1" p="$2"
+    case "$pm" in
+        pacman) pacman -S --needed --noconfirm "$p" ;;
+        apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$p" ;;
+        dnf)    dnf install -y -q "$p" ;;
+        zypper) zypper install -y "$p" ;;
+        *)      return 1 ;;
+    esac
+}
+
+# Install packages that the app genuinely needs. Any that cannot be installed
+# are collected and reported by name, then the installer aborts with guidance —
+# far clearer than `set -e` killing the whole script on the first bad name.
+install_critical() {
+    local pm="$1"; shift
+    local failed=()
+    local p
+    for p in "$@"; do
+        _pm_install_one "$pm" "$p" || failed+=("$p")
+    done
+    if (( ${#failed[@]} )); then
+        die "Failed to install required package(s): ${failed[*]}
+Your distribution's repositories may name these differently, or the packages
+may be unavailable. Install them manually, then re-run this installer."
+    fi
+}
+
+# Install optional packages one by one; missing ones only degrade features and
+# must never abort the install.
+install_optional() {
+    local pm="$1"; shift
+    local p
+    for p in "$@"; do
+        _pm_install_one "$pm" "$p" 2>/dev/null \
+            || warn "$p not installed — some features may be unavailable."
+    done
+}
+
 _install_pyqt6() {
     local pm="$1" syspkg="$2"
     python3 -c "import PyQt6" 2>/dev/null && return 0
@@ -243,46 +294,55 @@ _aur_install() {
 }
 
 pkg_arch() {
-    step "Installing packages (pacman)"
-    pacman -Sy --needed --noconfirm \
+    step "Refreshing package databases (pacman)"
+    # Refresh only — a full `-Syu` mid-install could pull a huge upgrade the
+    # user did not ask for, while a partial upgrade (`-Sy` + install) is the
+    # documented risk. We refresh once here, then install against fresh DBs.
+    pacman -Sy --noconfirm 2>/dev/null \
+        || warn "pacman -Sy failed — continuing with cached databases."
+
+    step "Installing required packages (pacman)"
+    install_critical pacman \
         python python-pip python-pyqt6 \
-        tor dnscrypt-proxy i2pd \
-        nftables iptables-nft iproute2 polkit \
-        conntrack-tools bind
+        tor nftables iptables-nft iproute2
+
+    step "Installing optional packages (pacman)"
+    install_optional pacman dnscrypt-proxy i2pd polkit conntrack-tools bind
     _aur_install redsocks
     _aur_install obfs4proxy
 }
 
 pkg_debian() {
     step "Updating package list"
-    apt-get update -qq
+    apt-get update -qq || warn "apt-get update failed — continuing with cached lists."
 
-    step "Installing packages (apt)"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    step "Installing required packages (apt)"
+    install_critical apt \
         python3 python3-pip \
         tor nftables iptables iproute2
 
-    # polkit: name changed in Debian 12 / Ubuntu 22.10
+    # polkit: package name changed in Debian 12 / Ubuntu 22.10
+    step "Installing polkit (apt)"
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         policykit-1 2>/dev/null || \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         polkitd libpolkit-agent-1-0 2>/dev/null || \
         warn "polkit not installed — some privilege escalation features may not work."
 
-    for pkg in dnscrypt-proxy i2pd redsocks obfs4proxy conntrack dnsutils; do
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$pkg" 2>/dev/null \
-            || warn "$pkg not found in apt repos — install manually if needed."
-    done
+    step "Installing optional packages (apt)"
+    install_optional apt dnscrypt-proxy i2pd redsocks obfs4proxy conntrack dnsutils
 
     _install_pyqt6 apt python3-pyqt6
 }
 
 pkg_fedora() {
-    step "Installing packages (dnf)"
-    dnf install -y -q \
+    step "Installing required packages (dnf)"
+    install_critical dnf \
         python3 python3-pip \
-        tor nftables iptables iproute polkit \
-        conntrack-tools bind-utils
+        tor nftables iptables iproute
+
+    step "Installing optional packages (dnf)"
+    install_optional dnf polkit conntrack-tools bind-utils
 
     # redsocks
     command -v redsocks &>/dev/null || \
@@ -319,16 +379,16 @@ pkg_fedora() {
 }
 
 pkg_opensuse() {
-    step "Installing packages (zypper)"
-    zypper refresh -q
-    zypper install -y \
-        python3 python3-pip \
-        tor nftables iptables iproute2 polkit
+    step "Refreshing repositories (zypper)"
+    zypper refresh -q || warn "zypper refresh failed — continuing with cached metadata."
 
-    for pkg in dnscrypt-proxy i2pd redsocks obfs4proxy conntrack-tools bind-utils; do
-        zypper install -y "$pkg" 2>/dev/null \
-            || warn "$pkg not found in zypper repos — install manually if needed."
-    done
+    step "Installing required packages (zypper)"
+    install_critical zypper \
+        python3 python3-pip \
+        tor nftables iptables iproute2
+
+    step "Installing optional packages (zypper)"
+    install_optional zypper polkit dnscrypt-proxy i2pd redsocks obfs4proxy conntrack-tools bind-utils
 
     _install_pyqt6 zypper python3-qt6
 }
@@ -477,6 +537,20 @@ ${nix_user_group}
 }
 NIXEOF
     ok "Module written."
+
+    # Flake-based configurations own their module graph through flake.nix; we
+    # cannot safely rewrite that with a regex, and there may be no classic
+    # configuration.nix to patch at all. Detect this and hand the user precise
+    # manual steps instead of corrupting their config.
+    if [[ -f "$nixdir/flake.nix" || ! -f "$nixdir/configuration.nix" ]]; then
+        warn "Flake-based (or non-standard) NixOS configuration detected."
+        warn "The module was written to $module but NOT wired in automatically."
+        warn "Add it to your configuration's imports and rebuild manually:"
+        warn "    imports = [ ./entropy-shield.nix ];"
+        warn "    sudo nixos-rebuild switch"
+        _print_success_nixos
+        return
+    fi
 
     step "Patching $nixdir/configuration.nix"
     local backup="$nixdir/configuration.nix.entropy-shield.bak"
@@ -710,6 +784,8 @@ if $UNINSTALL; then
 fi
 
 # ── install ───────────────────────────────────────────────────
+# All supported distros are systemd-based — refuse anything else up front.
+require_systemd
 _clean_previous
 
 if [[ "$DISTRO_ID" == "nixos" ]]; then
@@ -732,10 +808,18 @@ elif distro_is opensuse || distro_is suse || distro_is tumbleweed; then
     common_install
 
 else
-    die "Unrecognized distribution: $DISTRO_ID
-Supported: Arch/Manjaro, Debian/Ubuntu/Mint/Kali, Fedora/RHEL/Alma/Rocky, openSUSE, NixOS
+    die "Your distribution (${PRETTY_NAME:-$DISTRO_ID}) is not supported.
 
-Override with: DISTRO_ID=arch sudo bash install.sh
-               DISTRO_ID=debian sudo bash install.sh
-               DISTRO_ID=fedora sudo bash install.sh"
+Supported distributions:
+  • Arch / Manjaro / EndeavourOS / Garuda / CachyOS
+  • Debian / Ubuntu / Mint / Pop!_OS / elementary / Kali / Zorin / Parrot
+  • Fedora / RHEL / CentOS / AlmaLinux / Rocky / Nobara
+  • openSUSE (Leap / Tumbleweed)
+  • NixOS
+
+If your distribution is a derivative of one of the above, you can force a
+matching package path:
+    DISTRO_ID=arch   sudo bash install.sh
+    DISTRO_ID=debian sudo bash install.sh
+    DISTRO_ID=fedora sudo bash install.sh"
 fi

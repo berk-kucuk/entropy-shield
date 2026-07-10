@@ -205,6 +205,11 @@ class TrayHelper(QObject):
 def main():
     icon_path = sys.argv[1] if len(sys.argv) > 1 else ""
     app = QApplication(sys.argv)
+    # Set the application name so desktop notifications are titled
+    # "Entropy Shield" instead of the helper script's process name.
+    app.setApplicationName("Entropy Shield")
+    app.setApplicationDisplayName("Entropy Shield")
+    app.setDesktopFileName("entropy-shield")
     app.setQuitOnLastWindowClosed(False)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():

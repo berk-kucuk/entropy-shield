@@ -59,15 +59,23 @@ def main() -> None:
     from PyQt6.QtGui import QFontDatabase
     from gui.main_window import MainWindow
 
+    # Start hidden in the system tray only (no visible window). Used by the
+    # autostart entry so the app comes up in the tray on login without popping
+    # the GUI open. The user can restore the window from the tray menu.
+    start_hidden = "--tray" in sys.argv or "--minimized" in sys.argv
+
     app = QApplication(sys.argv)
     app.setApplicationName("Entropy Shield")
+    # Keep running in the tray even when the main window is hidden/closed.
+    app.setQuitOnLastWindowClosed(False)
 
     _font_path = os.path.join(os.path.dirname(__file__), "Fonts", "Pixeled.ttf")
     if os.path.exists(_font_path):
         QFontDatabase.addApplicationFont(_font_path)
 
     w = MainWindow()
-    w.show()
+    if not start_hidden:
+        w.show()
     sys.exit(app.exec())
 
 
