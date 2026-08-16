@@ -6,7 +6,7 @@ import os
 import time
 from typing import Callable
 
-from .config import cfg
+from .config import cfg, cfg_port
 from .platform import is_nixos
 
 _CONFIG_PATHS = [
@@ -41,7 +41,7 @@ class DNSCryptManager:
             return
 
         self._config = self._find_config()
-        port        = cfg().get("dnscrypt", "port")
+        port        = cfg_port("dnscrypt", "port")
         listen_line = f"listen_addresses = ['127.0.0.1:{port}', '[::1]:{port}']"
 
         dnssec   = "true" if cfg().get("dnscrypt", "require_dnssec")   else "false"
@@ -194,7 +194,7 @@ class DNSCryptManager:
         FirewallManager) already redirect port 53 → 5353, so nothing extra
         is needed here.
         """
-        port = cfg().get("dnscrypt", "port")
+        port = cfg_port("dnscrypt", "port")
         dns_addr = f"127.0.0.1:{port}"
 
         if not self._resolved_running():

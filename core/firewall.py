@@ -1,11 +1,12 @@
 from __future__ import annotations
 import os
 import pwd
+import re
 import subprocess
 import shutil
 from typing import Callable
 
-from .config import cfg
+from .config import cfg, cfg_port
 from .platform import firewall_backend
 from .i2p import REDSOCKS_PORT
 
@@ -59,15 +60,27 @@ _DOH_IPS = [
 ]
 
 
+_DECIMAL = re.compile(r"^[0-9]{1,10}$")
+
+
 def _resolve_uid(uid_or_user: str) -> str | None:
-    """Resolve a username or numeric UID string to a numeric UID string."""
+    """Resolve a username or numeric UID string to a numeric UID string.
+
+    SECURITY: the return value is interpolated into an nftables ``meta skuid``
+    expression, so it must be a plain decimal number and nothing else.  Note
+    that ``str.isdigit()`` — used here previously — is True for non-ASCII digits
+    such as "٥", which would be emitted verbatim and break the whole ruleset;
+    the explicit ASCII pattern is what makes this safe.
+    """
     if not uid_or_user:
         return None
-    if uid_or_user.isdigit():
+    if _DECIMAL.match(uid_or_user):
         return uid_or_user
     r = subprocess.run(["id", "-u", uid_or_user], capture_output=True, text=True)
     if r.returncode == 0:
-        return r.stdout.strip()
+        out = r.stdout.strip()
+        if _DECIMAL.match(out):
+            return out
     return None
 
 
@@ -100,17 +113,17 @@ def _tor_uid() -> str:
     redirected back through TransPort.
     """
     for name in ("debian-tor", "tor", "_tor", "toranon"):
-        r = subprocess.run(["id", "-u", name], capture_output=True, text=True)
-        if r.returncode == 0:
-            return r.stdout.strip()
+        uid = _resolve_uid(name)
+        if uid is not None:
+            return uid
     return "0"
 
 
 def _i2pd_uid() -> str | None:
     for name in ("i2pd", "i2p"):
-        r = subprocess.run(["id", "-u", name], capture_output=True, text=True)
-        if r.returncode == 0:
-            return r.stdout.strip()
+        uid = _resolve_uid(name)
+        if uid is not None:
+            return uid
     return None
 
 
@@ -128,6 +141,13 @@ def _real_user() -> tuple[int, pwd.struct_passwd] | None:
 
 # ── nftables ──────────────────────────────────────────────────
 
+def _nft_port(value, fallback: int) -> int:
+    """Coerce *value* to an in-range port, falling back to a safe default."""
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535:
+        return value
+    return fallback
+
+
 def _nft(script: str) -> None:
     r = subprocess.run(["nft", "-f", "-"], input=script, text=True,
                        capture_output=True)
@@ -140,6 +160,18 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
                tor_uid: str | None,
                use_i2p: bool = False,
                i2p_transparent: bool = False) -> str:
+
+    # SECURITY: everything below is interpolated into a script handed to
+    # `nft -f -` as root.  The port numbers originate in the desktop user's
+    # config file, so they are forced to integers here as well as in
+    # core.config — a string carrying a newline would otherwise append
+    # attacker-chosen rules to the ruleset that is supposed to be preventing
+    # leaks, with the GUI still reporting "PROTECTED".
+    tor_trans = _nft_port(tor_trans, 9040)
+    tor_dns   = _nft_port(tor_dns,   5300)
+    dns_port  = _nft_port(dns_port,  5380)
+    if tor_uid is not None and not _DECIMAL.match(str(tor_uid)):
+        tor_uid = None
 
     i2p_only = use_i2p and not use_tor and not use_dnscrypt
     lines = [f"table ip {_NFT_TABLE} {{"]
@@ -335,11 +367,11 @@ class FirewallManager:
         self._log("[FW] Applying firewall rules...")
         self._backend = firewall_backend()
 
-        tor_trans = cfg().get("tor", "trans_port")
-        tor_dns   = cfg().get("tor", "dns_port")
-        dns_port  = cfg().get("dnscrypt", "port")
-        self._i2p_http  = cfg().get("i2p", "http_port")
-        self._i2p_socks = cfg().get("i2p", "socks_port")
+        tor_trans = cfg_port("tor", "trans_port")
+        tor_dns   = cfg_port("tor", "dns_port")
+        dns_port  = cfg_port("dnscrypt", "port")
+        self._i2p_http  = cfg_port("i2p", "http_port")
+        self._i2p_socks = cfg_port("i2p", "socks_port")
 
         if self._backend == "nftables":
             self._apply_nft(use_tor, use_dnscrypt, tor_trans, tor_dns,
@@ -356,7 +388,7 @@ class FirewallManager:
         # .onion DNS lookups.
         if use_tor:
             self._use_tor    = True
-            self._tor_socks  = cfg().get("tor", "socks_port")
+            self._tor_socks  = cfg_port("tor", "socks_port")
             self._set_tor_proxy(True)
             self._log(
                 f"[FW] System SOCKS proxy → Tor (127.0.0.1:{self._tor_socks})."
@@ -501,6 +533,11 @@ class FirewallManager:
                    tor_trans: int, tor_dns: int, dns_port: int,
                    use_i2p: bool = False,
                    i2p_transparent: bool = False) -> None:
+        # Same reasoning as _nft_build(): these come from the user's config and
+        # are about to become command arguments run as root.
+        tor_trans = _nft_port(tor_trans, 9040)
+        tor_dns   = _nft_port(tor_dns,   5300)
+        dns_port  = _nft_port(dns_port,  5380)
         i2p_only = use_i2p and not use_tor and not use_dnscrypt
 
         if use_tor:

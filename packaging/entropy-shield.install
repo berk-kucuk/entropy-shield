@@ -1,0 +1,99 @@
+# SECURITY: pre-daemon releases let the app write a passwordless sudoers rule at
+# runtime (the old "Auth Mode" toggle).  pacman never owned that file, so it
+# would survive an upgrade and keep a local privilege-escalation path.  Remove it.
+_remove_legacy_sudoers() {
+    rm -f /etc/sudoers.d/entropy-shield
+}
+
+# The 'entropy-shield' group ships as usr/lib/sysusers.d/entropy-shield.conf and
+# is normally created by the systemd-sysusers pacman hook. That hook runs as a
+# PostTransaction hook, i.e. AFTER this .install script's post_install runs, so
+# the group is NOT guaranteed to exist yet when we get here — usermod below
+# would silently fail with "group does not exist" on a first install. Create it
+# ourselves (idempotent) so ordering never matters.
+_ensure_group() {
+    getent group entropy-shield >/dev/null 2>&1 || groupadd --system entropy-shield
+}
+
+# Best-effort discovery of the unprivileged desktop user pacman/the AUR helper
+# was invoked for (mirrors install.sh's REAL_USER detection).
+_real_user() {
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        echo "$SUDO_USER"
+        return
+    fi
+    logname 2>/dev/null || true
+}
+
+# Actually add the user to the group instead of just printing instructions —
+# this is the step that was previously missing, leaving Connect broken until
+# the user found and ran the command manually.
+_add_user_to_group() {
+    real_user="$(_real_user)"
+    if [ -n "$real_user" ]; then
+        if usermod -aG entropy-shield "$real_user" 2>/dev/null; then
+            echo "  Added '$real_user' to the 'entropy-shield' group."
+        else
+            echo "  [!] Could not add '$real_user' to 'entropy-shield' automatically — run:"
+            echo "        sudo usermod -aG entropy-shield $real_user"
+        fi
+    else
+        echo "  [!] Could not determine the installing user — add yourself manually:"
+        echo "        sudo usermod -aG entropy-shield <your-user>"
+    fi
+}
+
+# $1 = "start" on a fresh install (nothing running yet) or "restart" on an
+# upgrade. This distinction matters: `systemctl enable --now` on a unit that
+# is already active just enables it — it does NOT restart it, so an upgrade
+# would leave the OLD daemon code running in memory (stale until the next
+# manual restart/reboot) even though /opt/entropy-shield was updated on disk.
+_enable_daemon() {
+    action="$1"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if systemctl enable entropy-shield.service >/dev/null 2>&1 \
+        && systemctl "$action" entropy-shield.service >/dev/null 2>&1; then
+        if [ "$action" = "restart" ]; then
+            echo "  Restarted the entropy-shield daemon (picks up the update)."
+        else
+            echo "  Enabled and started the entropy-shield daemon."
+        fi
+    else
+        echo "  [!] Could not $action the daemon automatically — run:"
+        echo "        sudo systemctl enable --now entropy-shield"
+    fi
+}
+
+post_install() {
+    _remove_legacy_sudoers
+    _ensure_group
+    _add_user_to_group
+    _enable_daemon start
+    echo ""
+    echo "  Entropy Shield installed successfully."
+    echo ""
+    echo "  Privileged operations run in a root daemon (no pkexec/sudo). The"
+    echo "  daemon has been enabled/started and your user was added to the"
+    echo "  'entropy-shield' group automatically."
+    echo ""
+    echo "  Log out and back in (or reboot) for the new group membership to"
+    echo "  take effect — Linux only applies group changes to new login"
+    echo "  sessions. Then launch:"
+    echo "    entropy-shield"
+    echo ""
+}
+
+post_upgrade() {
+    _remove_legacy_sudoers
+    _ensure_group
+    _add_user_to_group
+    _enable_daemon restart
+    echo ""
+    echo "  Entropy Shield upgraded."
+    echo ""
+    echo "  The daemon was restarted to pick up the update, and your group"
+    echo "  membership was (re)applied automatically. If you were not already"
+    echo "  in the 'entropy-shield' group, log out and back in for it to take"
+    echo "  effect."
+    echo ""
+}

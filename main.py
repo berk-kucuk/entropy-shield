@@ -14,16 +14,30 @@ for _p in ("/run/current-system/sw/bin", "/run/wrappers/bin",
 _instance_lock = None
 
 
+def _lock_dir() -> str:
+    """Return a private, user-owned directory to hold the single-instance lock.
+
+    Never /tmp: it is world-writable, so on a shared machine another account
+    could hold "entropy-shield.lock" open to keep the app from ever starting,
+    or point it at a symlink and have us truncate a file of theirs choosing.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and os.path.isdir(runtime):
+        return runtime
+    fallback = os.path.join(os.path.expanduser("~"), ".cache", "entropy-shield")
+    os.makedirs(fallback, mode=0o700, exist_ok=True)
+    return fallback
+
+
 def _acquire_lock() -> bool:
     """Return True if this is the first instance, False if one is already running."""
     global _instance_lock
     import fcntl
-    lock_path = os.path.join(
-        os.environ.get("XDG_RUNTIME_DIR", "/tmp"),
-        "entropy-shield.lock",
-    )
+    lock_path = os.path.join(_lock_dir(), "entropy-shield.lock")
     try:
-        _instance_lock = open(lock_path, "w")
+        fd = os.open(lock_path,
+                     os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        _instance_lock = os.fdopen(fd, "w")
         fcntl.flock(_instance_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
     except OSError:

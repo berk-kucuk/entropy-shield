@@ -1,14 +1,37 @@
 from __future__ import annotations
 import os
 import shutil
+import stat
 import subprocess
 import pwd
 from typing import Callable
 
-_PROFILE_TOR      = "/tmp/entropy-shield-ff-tor"
-_PROFILE_I2P      = "/tmp/entropy-shield-ff-i2p"
-_PROFILE_CR_TOR   = "/tmp/entropy-shield-cr-tor"
-_PROFILE_CR_I2P   = "/tmp/entropy-shield-cr-i2p"
+# Browser profile directories.
+#
+# SECURITY: these used to be fixed paths in /tmp ("/tmp/entropy-shield-ff-tor",
+# …).  On a shared machine /tmp is world-writable, so any other local account
+# could create those names first — as a directory it owns, or as a symlink to
+# somewhere else — and then own the profile that "Open Tor Browser" launches.
+# Because Firefox reads prefs.js from the profile, that is enough to turn the
+# proxy back off and route the user's supposedly-anonymous session straight to
+# the clearnet, as well as to read the resulting history and cookies afterwards.
+# The profiles now live under the invoking user's own 0700 runtime directory,
+# which no other unprivileged account can create or traverse.
+_PROFILE_NAMES = {
+    "ff-tor": "firefox-tor",
+    "ff-i2p": "firefox-i2p",
+    "cr-tor": "chromium-tor",
+    "cr-i2p": "chromium-i2p",
+}
+
+# The old world-writable locations, removed on first use so an attacker-planted
+# directory left over from a previous version cannot linger.
+_LEGACY_PROFILES = [
+    "/tmp/entropy-shield-ff-tor",
+    "/tmp/entropy-shield-ff-i2p",
+    "/tmp/entropy-shield-cr-tor",
+    "/tmp/entropy-shield-cr-i2p",
+]
 
 _TOR_USER_JS = """\
 user_pref("network.proxy.type", 1);
@@ -147,11 +170,67 @@ def _find_chromium() -> str | None:
     return None
 
 
+def _drop_legacy_profiles() -> None:
+    """Delete the old /tmp profile directories, but only if we own them.
+
+    If another account planted one of these names we must not follow it or
+    delete its contents — leaving it alone is safe now that nothing reads it.
+    """
+    for path in _LEGACY_PROFILES:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            # A symlink at a world-writable path: only unlink the link itself.
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            continue
+        if st.st_uid != os.getuid():
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _profile_dir(key: str, uid: int, pw: pwd.struct_passwd) -> str:
+    """Return a private, user-owned directory for browser profile *key*.
+
+    Prefers the per-user runtime directory (/run/user/<uid>, mode 0700, wiped
+    on logout — ideal for a privacy tool); falls back to ~/.cache when the
+    runtime directory is unavailable.
+    """
+    runtime_dir = f"/run/user/{uid}"
+    if os.path.isdir(runtime_dir):
+        base = os.path.join(runtime_dir, "entropy-shield", "profiles")
+    else:
+        base = os.path.join(pw.pw_dir, ".cache", "entropy-shield", "profiles")
+
+    path = os.path.join(base, _PROFILE_NAMES[key])
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    # makedirs() does not change the mode of directories that already exist,
+    # and the parents are created with the process umask applied — tighten the
+    # whole chain explicitly so the profile is never group/world readable.
+    walk = path
+    for _ in range(3):
+        try:
+            os.chmod(walk, 0o700)
+            if os.geteuid() == 0:
+                os.chown(walk, uid, pw.pw_gid)
+        except OSError:
+            pass
+        walk = os.path.dirname(walk)
+    return path
+
+
 def _prepare_firefox_profile(profile_dir: str, user_js: str,
                               uid: int, gid: int) -> None:
-    os.makedirs(profile_dir, exist_ok=True)
     user_js_path = os.path.join(profile_dir, "user.js")
-    with open(user_js_path, "w") as f:
+    # O_NOFOLLOW: never write through a symlink someone else may have left in
+    # the profile directory.
+    fd = os.open(user_js_path,
+                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(user_js)
     try:
         os.chown(profile_dir, uid, gid)
@@ -204,28 +283,26 @@ def launch_tor(socks_port: int, log: Callable[[str], None]) -> None:
             "Cannot determine real user UID (run via sudo or pkexec).")
     uid, pw = info
     env = _session_env(uid, pw)
+    _drop_legacy_profiles()
 
     ff = _find_firefox()
     if ff:
+        profile = _profile_dir("ff-tor", uid, pw)
         user_js = _TOR_USER_JS.format(socks_port=socks_port)
-        _prepare_firefox_profile(_PROFILE_TOR, user_js, uid, pw.pw_gid)
-        cmd = [ff, "--no-remote", "--profile", _PROFILE_TOR]
+        _prepare_firefox_profile(profile, user_js, uid, pw.pw_gid)
+        cmd = [ff, "--no-remote", "--profile", profile]
         _spawn_as_user(cmd, pw, env)
-        log(f"[BROWSER] Firefox launched via Tor (profile: {_PROFILE_TOR}).")
+        log(f"[BROWSER] Firefox launched via Tor (profile: {profile}).")
         return
 
     cr = _find_chromium()
     if cr:
-        os.makedirs(_PROFILE_CR_TOR, exist_ok=True)
-        try:
-            os.chown(_PROFILE_CR_TOR, uid, pw.pw_gid)
-        except Exception:
-            pass
+        profile = _profile_dir("cr-tor", uid, pw)
         cmd = [
             cr,
             f"--proxy-server=socks5://127.0.0.1:{socks_port}",
             "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost",
-            f"--user-data-dir={_PROFILE_CR_TOR}",
+            f"--user-data-dir={profile}",
             "--no-first-run", "--no-default-browser-check",
             "--disable-sync", "--incognito",
         ]
@@ -246,27 +323,25 @@ def launch_i2p(http_port: int, socks_port: int,
             "Cannot determine real user UID (run via sudo or pkexec).")
     uid, pw = info
     env = _session_env(uid, pw)
+    _drop_legacy_profiles()
 
     ff = _find_firefox()
     if ff:
+        profile = _profile_dir("ff-i2p", uid, pw)
         user_js = _I2P_USER_JS.format(http_port=http_port, socks_port=socks_port)
-        _prepare_firefox_profile(_PROFILE_I2P, user_js, uid, pw.pw_gid)
-        cmd = [ff, "--no-remote", "--profile", _PROFILE_I2P]
+        _prepare_firefox_profile(profile, user_js, uid, pw.pw_gid)
+        cmd = [ff, "--no-remote", "--profile", profile]
         _spawn_as_user(cmd, pw, env)
-        log(f"[BROWSER] Firefox launched via I2P (profile: {_PROFILE_I2P}).")
+        log(f"[BROWSER] Firefox launched via I2P (profile: {profile}).")
         return
 
     cr = _find_chromium()
     if cr:
-        os.makedirs(_PROFILE_CR_I2P, exist_ok=True)
-        try:
-            os.chown(_PROFILE_CR_I2P, uid, pw.pw_gid)
-        except Exception:
-            pass
+        profile = _profile_dir("cr-i2p", uid, pw)
         cmd = [
             cr,
             f"--proxy-server=http://127.0.0.1:{http_port}",
-            f"--user-data-dir={_PROFILE_CR_I2P}",
+            f"--user-data-dir={profile}",
             "--no-first-run", "--no-default-browser-check",
             "--disable-sync",
         ]

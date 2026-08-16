@@ -7,7 +7,7 @@ import subprocess
 import threading
 from typing import Callable
 
-from .config import cfg
+from .config import cfg, cfg_port
 
 _HS_DIR       = "/var/lib/tor/entropy-shield-hs"
 _MARKER_BEGIN = "# --- entropy-shield-hs-begin ---"
@@ -46,8 +46,8 @@ class OnionServerManager:
     # ── torrc config ──────────────────────────────────────────
 
     def configure(self, torrc_path: str) -> None:
-        local_port = cfg().get("onion_server", "local_port")
-        hs_port    = cfg().get("onion_server", "hs_port")
+        local_port = cfg_port("onion_server", "local_port")
+        hs_port    = cfg_port("onion_server", "hs_port")
 
         block = (
             f"\n{_MARKER_BEGIN}\n"
@@ -81,8 +81,8 @@ class OnionServerManager:
     # ── HTTP file server ──────────────────────────────────────
 
     def start(self) -> None:
-        local_port = cfg().get("onion_server", "local_port")
-        serve_dir  = cfg().get("onion_server", "serve_dir").strip()
+        local_port = cfg_port("onion_server", "local_port")
+        serve_dir  = str(cfg().get("onion_server", "serve_dir")).strip()
         if not serve_dir:
             serve_dir = _real_user_home()
 

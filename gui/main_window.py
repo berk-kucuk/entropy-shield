@@ -27,7 +27,7 @@ import gui.themes as themes
 from gui.themes import current as theme, build_qss
 from gui.widgets import ServiceCard, Spinner, StatusRing, NetSpeedGraph
 from gui.settings_panel import SettingsPanel
-from core.config import cfg
+from core.config import cfg, cfg_port
 from core.updater import VERSION
 import core.browser as browser
 import core.autostart as autostart
@@ -369,8 +369,8 @@ class _HealthCheckWorker(QThread):
         # Tor runs as a managed subprocess (not a systemd service) so we
         # detect crashes by probing its SocksPort directly.
         if "tor" in self._active_layers:
-            from core.config import cfg as _cfg
-            socks_port = _cfg().get("tor", "socks_port")
+            from core.config import cfg_port as _cfg_port
+            socks_port = _cfg_port("tor", "socks_port")
             if not self._tor_socks_alive(socks_port):
                 time.sleep(3)
                 if not self._tor_socks_alive(socks_port):
@@ -1427,6 +1427,17 @@ class MainWindow(QMainWindow):
             self._runner_proc = getattr(w, "new_runner", None)
         elif info in ("disconnect",) or not success:
             if info == "disconnect" or not success:
+                # A failed connect still leaves an open daemon session (the
+                # daemon keeps it alive so the rollback can finish).  Close it
+                # explicitly instead of dropping the last reference and relying
+                # on the garbage collector to release root-held state.
+                stale = self._runner_proc or (
+                    getattr(w, "new_runner", None) if w is not None else None)
+                if stale is not None:
+                    try:
+                        stale.close()
+                    except Exception:
+                        pass
                 self._runner_proc = None
 
         if w is not None:
@@ -1658,7 +1669,7 @@ class MainWindow(QMainWindow):
             return
         self._ip_check_btn.setEnabled(False)
         self._append_log("[IP CHECK] Checking via Tor… (up to 12 s)")
-        self._ip_worker = _IpCheckWorker(cfg().get("tor", "socks_port"))
+        self._ip_worker = _IpCheckWorker(cfg_port("tor", "socks_port"))
         self._ip_worker.result.connect(self._on_ip_result)
         self._ip_worker.start()
 
@@ -1781,8 +1792,8 @@ class MainWindow(QMainWindow):
             return
         self._leak_test_btn.setEnabled(False)
         self._append_log("[LEAK TEST] Starting tests…")
-        socks = cfg().get("tor", "socks_port") if "tor" in self._active_layers else 9050
-        dns   = cfg().get("tor", "dns_port")   if "tor" in self._active_layers else 5300
+        socks = cfg_port("tor", "socks_port") if "tor" in self._active_layers else 9050
+        dns   = cfg_port("tor", "dns_port")   if "tor" in self._active_layers else 5300
         self._leak_worker = _LeakTestWorker(socks, dns)
         self._leak_worker.progress.connect(self._append_log)
         self._leak_worker.done.connect(self._on_leak_done)
@@ -1864,7 +1875,7 @@ class MainWindow(QMainWindow):
     def _on_open_tor_browser(self) -> None:
         self._tor_browser_btn.setEnabled(False)
         try:
-            browser.launch_tor(cfg().get("tor", "socks_port"), self._append_log)
+            browser.launch_tor(cfg_port("tor", "socks_port"), self._append_log)
         except Exception as exc:
             self._append_log(f"[BROWSER] {exc}")
         finally:
@@ -1875,8 +1886,8 @@ class MainWindow(QMainWindow):
         self._i2p_browser_btn.setEnabled(False)
         try:
             browser.launch_i2p(
-                cfg().get("i2p", "http_port"),
-                cfg().get("i2p", "socks_port"),
+                cfg_port("i2p", "http_port"),
+                cfg_port("i2p", "socks_port"),
                 self._append_log,
             )
         except Exception as exc:
@@ -1889,7 +1900,7 @@ class MainWindow(QMainWindow):
         self._proxy_terminal_btn.setEnabled(False)
         try:
             browser.launch_proxy_terminal(
-                cfg().get("tor", "socks_port"), self._append_log)
+                cfg_port("tor", "socks_port"), self._append_log)
         except Exception as exc:
             self._append_log(f"[TERMINAL] {exc}")
         finally:

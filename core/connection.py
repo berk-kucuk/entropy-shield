@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from typing import Callable
 from .tor          import TorManager, TORRC
-from .config       import cfg
+from .config       import cfg, cfg_port
 from .dnscrypt     import DNSCryptManager
 from .i2p          import I2PManager
 from .onion_server import OnionServerManager
@@ -90,7 +90,7 @@ class ConnectionManager:
             # Tor SOCKS — DNS is then both encrypted (DNSCrypt) and anonymised (Tor).
             self._dns.configure(
                 via_tor=use_tor,
-                tor_socks=cfg().get("tor", "socks_port") if use_tor else 9050,
+                tor_socks=cfg_port("tor", "socks_port") if use_tor else 9050,
             )
             self._configured["dnscrypt"] = True
 
@@ -166,7 +166,7 @@ class ConnectionManager:
             self._log(
                 "[INFO] Tor+I2P mode: clearnet traffic → Tor TransPort. "
                 "I2P eepsites accessible via proxy 127.0.0.1:"
-                f"{cfg().get('i2p', 'http_port')}. "
+                f"{cfg_port('i2p', 'http_port')}. "
                 "i2pd tunnels out via Tor SOCKS (NTCP2, SSU2 disabled)."
             )
 

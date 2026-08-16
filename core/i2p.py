@@ -6,7 +6,7 @@ import os
 import time
 from typing import Callable
 
-from .config import cfg
+from .config import cfg, cfg_port
 from .platform import is_nixos
 
 _CONFIG_PATHS = [
@@ -74,8 +74,8 @@ class I2PManager:
             return
 
         self._config = self._find_config()
-        http_port  = cfg().get("i2p", "http_port")
-        socks_port = cfg().get("i2p", "socks_port")
+        http_port  = cfg_port("i2p", "http_port")
+        socks_port = cfg_port("i2p", "socks_port")
 
         bak = self._config + _BAK_SUFFIX
         if not os.path.exists(bak):
@@ -96,12 +96,13 @@ class I2PManager:
         content = _set_section_option(content, "socksproxy", "port", str(socks_port))
 
         max_bw = cfg().get("i2p", "max_bandwidth")
+        max_bw = max_bw if isinstance(max_bw, int) and not isinstance(max_bw, bool) else 0
         if max_bw > 0:
             content = _set_section_option(content, "bandwidth", "outbound", str(max_bw))
             content = _set_section_option(content, "bandwidth", "inbound",  str(max_bw))
 
         if use_tor:
-            tor_socks = cfg().get("tor", "socks_port")
+            tor_socks = cfg_port("tor", "socks_port")
             # Route i2pd outbound connections through Tor's SOCKS proxy so
             # I2P peers are reached anonymously (NTCP2 over Tor).
             content = _set_section_option(
@@ -163,7 +164,7 @@ class I2PManager:
     # ── redsocks ──────────────────────────────────────────────
 
     def _start_redsocks(self) -> None:
-        socks_port = cfg().get("i2p", "socks_port")
+        socks_port = cfg_port("i2p", "socks_port")
         conf = (
             "base {\n"
             "    log_debug = off;\n"

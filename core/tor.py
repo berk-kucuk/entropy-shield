@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Callable
 
-from .config import cfg
+from .config import cfg, cfg_port
 from .platform import is_nixos
 
 _RUN_DIR  = "/run/entropy-shield"
@@ -28,6 +28,12 @@ def _torrc_safe(value: str) -> str:
     ``ClientTransportPlugin x exec /tmp/evil``, which Tor would execute.  Keeping
     every value on a single line confines it to the directive it belongs to; a
     malformed value simply fails ``tor --verify-config`` and never runs code.
+
+    :mod:`core.config` already whitelists the characters of every string that
+    reaches this file; this is the second line of defence.  Note that the port
+    numbers below go through :func:`core.config.cfg_port` for the same reason —
+    they are just as user-controlled as the string fields, and an unvalidated
+    port was itself an injection point.
     """
     return value.replace("\r", " ").replace("\n", " ")
 
@@ -97,12 +103,12 @@ class TorManager:
             if r_uid.returncode == 0 and r_gid.returncode == 0:
                 os.chown(_DATA_DIR, int(r_uid.stdout.strip()), int(r_gid.stdout.strip()))
 
-        trans   = cfg().get("tor", "trans_port")
-        dns     = cfg().get("tor", "dns_port")
-        socks   = cfg().get("tor", "socks_port")
-        ctrl    = cfg().get("tor", "control_port")
-        exits   = _torrc_safe(cfg().get("tor", "exit_nodes").strip())
-        strict  = cfg().get("tor", "strict_nodes")
+        trans   = cfg_port("tor", "trans_port")
+        dns     = cfg_port("tor", "dns_port")
+        socks   = cfg_port("tor", "socks_port")
+        ctrl    = cfg_port("tor", "control_port")
+        exits   = _torrc_safe(str(cfg().get("tor", "exit_nodes"))).strip()
+        strict  = bool(cfg().get("tor", "strict_nodes"))
 
         # ── bridge / pluggable transport ─────────────────────────
         bridge_section = self._build_bridge_section()
@@ -114,14 +120,34 @@ class TorManager:
             dns_port       = dns,
             socks_port     = socks,
             control_port   = ctrl,
-            exit_line      = f"ExitNodes {{{exits}}}" if exits else "",
+            # core.config normalises this to Tor's own syntax ("{de},{nl}",
+            # "$FINGERPRINT", nicknames), so it is emitted verbatim.  Wrapping
+            # it in another pair of braces here — as an earlier version did —
+            # produced "ExitNodes {{de},{nl}}", which Tor rejects, so setting
+            # any exit node at all made every connect attempt fail.
+            exit_line      = f"ExitNodes {exits}" if exits else "",
             strict_line    = "StrictNodes 1" if strict else "",
             bridge_section = bridge_section,
         )
 
-        with open(_TORRC_PATH, "w") as f:
+        # The torrc holds the user's bridge lines, which are exactly the thing a
+        # censorship-circumvention setup must not leak to other local accounts,
+        # so it is not world-readable.  Tor is launched by the root daemon and
+        # parses the file before dropping to "User tor", but it re-reads it as
+        # that user on SIGHUP — hence group-readable by tor's group rather than
+        # root-only.
+        fd = os.open(_TORRC_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+        with os.fdopen(fd, "w") as f:
             f.write(content)
-        os.chmod(_TORRC_PATH, 0o644)
+        if tor_user:
+            r_gid = subprocess.run(["id", "-g", tor_user],
+                                   capture_output=True, text=True)
+            if r_gid.returncode == 0:
+                try:
+                    os.chown(_TORRC_PATH, 0, int(r_gid.stdout.strip()))
+                except (OSError, ValueError):
+                    pass
+        os.chmod(_TORRC_PATH, 0o640)
         self._log(f"[TOR] Custom torrc → {_TORRC_PATH}")
 
     def start(self) -> None:
@@ -264,7 +290,7 @@ class TorManager:
     def new_circuit(self) -> None:
         """Request a new Tor identity via the ControlPort (SIGNAL NEWNYM)."""
         import socket as _socket
-        ctrl = cfg().get("tor", "control_port")
+        ctrl = cfg_port("tor", "control_port")
         cookie_path = os.path.join(_DATA_DIR, "control_auth_cookie")
 
         try:
@@ -346,7 +372,7 @@ class TorManager:
         Returns an empty dict on any error (Tor not running, etc.).
         """
         import socket as _socket
-        ctrl = cfg().get("tor", "control_port")
+        ctrl = cfg_port("tor", "control_port")
         cookie_path = os.path.join(_DATA_DIR, "control_auth_cookie")
         result: dict[str, str] = {}
         try:
@@ -403,7 +429,7 @@ class TorManager:
           4. traffic/read + written  → cumulative byte counters
         """
         import socket as _socket
-        ctrl        = cfg().get("tor", "control_port")
+        ctrl        = cfg_port("tor", "control_port")
         cookie_path = os.path.join(_DATA_DIR, "control_auth_cookie")
 
         empty = {"circuit_count": 0, "exit_country": "",
@@ -512,7 +538,7 @@ class TorManager:
         if not killed:
             # Fallback: lock file may have been removed already but the process
             # is still alive and holding our ports.  Find it via ss.
-            self._kill_tor_by_port(cfg().get("tor", "socks_port"), _signal)
+            self._kill_tor_by_port(cfg_port("tor", "socks_port"), _signal)
 
     # ── stderr reader (daemon thread) ─────────────────────────────
 
@@ -576,7 +602,7 @@ class TorManager:
     _DROPIN_FILE = "/run/systemd/resolved.conf.d/entropy-shield.conf"
 
     def _redirect_resolved_dns(self) -> None:
-        dns_port = cfg().get("tor", "dns_port")
+        dns_port = cfg_port("tor", "dns_port")
         dns_addr = f"127.0.0.1:{dns_port}"
 
         if not self._resolved_running():
@@ -643,10 +669,10 @@ class TorManager:
         """Raise RuntimeError listing any Tor ports that are already in use."""
         import socket as _sock
         ports = {
-            "TransPort":   cfg().get("tor", "trans_port"),
-            "DNSPort":     cfg().get("tor", "dns_port"),
-            "SocksPort":   cfg().get("tor", "socks_port"),
-            "ControlPort": cfg().get("tor", "control_port"),
+            "TransPort":   cfg_port("tor", "trans_port"),
+            "DNSPort":     cfg_port("tor", "dns_port"),
+            "SocksPort":   cfg_port("tor", "socks_port"),
+            "ControlPort": cfg_port("tor", "control_port"),
         }
         busy = []
         for name, port in ports.items():

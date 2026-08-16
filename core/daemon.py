@@ -245,19 +245,32 @@ def _handle_client(conn: socket.socket) -> None:
         sys.stdout.write(msg + "\n")
         sys.stdout.flush()
 
+    # The daemon is long-lived and serves one client after another, so the
+    # per-client identity must be rebound on EVERY connection — never left over
+    # from the previous one.  Otherwise a session opened by root (uid 0), or one
+    # where SO_PEERCRED failed, would keep reading the *previous* user's config
+    # and resolve "the invoking user" to them: the onion server would publish
+    # that user's files and the proxy settings would be written into their
+    # desktop session.
+    from core import config as _config
+    uid = 0
     try:
         pid, uid, gid = _peer_cred(conn)
         sys.stdout.write(f"[DAEMON] client connected (pid={pid} uid={uid} gid={gid})\n")
         sys.stdout.flush()
-        # Read the *desktop user's* settings, not root's.  Identify them from the
-        # socket peer credentials.  Also expose the uid via SUDO_UID so helpers
-        # that resolve the invoking user's home (e.g. onion_server) keep working.
-        if uid > 0:
-            from core import config as _config
-            _config.use_user_config(uid)
-            os.environ["SUDO_UID"] = str(uid)
     except OSError:
-        pass
+        uid = 0
+
+    if uid > 0:
+        # Read the *desktop user's* settings, not root's.  Also expose the uid
+        # via SUDO_UID so helpers that resolve the invoking user's home (e.g.
+        # onion_server) keep working.
+        _config.use_user_config(uid)
+        os.environ["SUDO_UID"] = str(uid)
+    else:
+        _config.use_user_config(0)          # rebind to root's own config
+        os.environ.pop("SUDO_UID", None)
+        os.environ.pop("PKEXEC_UID", None)
 
     mgr: "ConnectionManager | None" = None
     connected = False
@@ -288,6 +301,16 @@ def _handle_client(conn: socket.socket) -> None:
 
                 # ── connect ───────────────────────────────────────────────────
                 elif cmd.startswith("connect "):
+                    # A second connect on the same session would replace the
+                    # ConnectionManager and orphan everything the first one
+                    # started — the running Tor subprocess handle and the
+                    # firewall state would be unreachable, so disconnect could
+                    # never clean them up.  The GUI opens a fresh connection per
+                    # session, but the daemon must not depend on the client
+                    # behaving.
+                    if mgr is not None:
+                        _log("[ERR] A session is already active on this connection.")
+                        continue
                     try:
                         params = json.loads(cmd[8:])
                         if not isinstance(params, dict):
