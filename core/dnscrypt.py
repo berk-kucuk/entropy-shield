@@ -59,12 +59,25 @@ class DNSCryptManager:
             line = f"{key} = {val}"
             if pattern.search(text):
                 return pattern.sub(line, text)
+            # TOML: a key declared after a [table] header belongs to that table.
+            # Distro configs usually end with an open [sources...] section, so
+            # appending here would nest these options inside it — dnscrypt-proxy
+            # then aborts with "Unsupported key in configuration file:
+            # [sources...:<key>]". Insert above the first table header instead
+            # so the option stays top-level.
+            m = re.search(r"(?m)^\[", text)
+            if m:
+                return text[:m.start()] + f"{line}\n" + text[m.start():]
             return text + f"\n{line}\n"
 
         if _LISTEN_RE.search(content):
             content = _LISTEN_RE.sub(listen_line, content)
         else:
-            content += f"\n{listen_line}\n"
+            m = re.search(r"(?m)^\[", content)
+            if m:
+                content = content[:m.start()] + f"{listen_line}\n" + content[m.start():]
+            else:
+                content += f"\n{listen_line}\n"
 
         content = _replace_or_append(content, _DNSSEC_RE,   "require_dnssec",   dnssec)
         content = _replace_or_append(content, _NOLOG_RE,    "require_nolog",    nolog)
