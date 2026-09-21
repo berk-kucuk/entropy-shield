@@ -51,7 +51,7 @@ _DEFAULTS: dict = {
     },
     "bridges": {
         "enabled":   False,
-        "transport": "obfs4",   # obfs4 | meek-azure | snowflake | manual
+        "transport": "obfs4",   # obfs4 | meek-azure | manual
         "lines":     [],        # list of "Bridge ..." strings
     },
     "dnscrypt": {
@@ -239,8 +239,11 @@ _VALIDATORS = {
     ("tor", "socks_port"):               _port,
     ("tor", "control_port"):             _port,
     ("tor", "exit_nodes"):               _exit_nodes,
-    ("bridges", "transport"):            _enum("obfs4", "meek-azure",
-                                               "snowflake", "manual"),
+    # snowflake was dropped: snowflake-client is packaged neither in the Arch
+    # repos nor in the AUR, so the option could never do anything but break Tor.
+    # An existing config that still says "snowflake" fails this check and
+    # _coerce() falls back to the "obfs4" default.
+    ("bridges", "transport"):            _enum("obfs4", "meek-azure", "manual"),
     ("bridges", "lines"):                _bridge_lines,
     ("dnscrypt", "port"):                _port,
     ("i2p", "http_port"):                _port,

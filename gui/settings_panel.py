@@ -202,7 +202,7 @@ class SettingsPanel(QWidget):
         # Bridge settings
         self._bridge_enabled   = ToggleSwitch(checked=False)
         self._bridge_transport = QComboBox()
-        self._bridge_transport.addItems(["obfs4", "meek-azure", "snowflake", "manual"])
+        self._bridge_transport.addItems(["obfs4", "meek-azure", "manual"])
         self._bridge_transport.setFixedWidth(110)
         self._bridge_lines = QTextEdit()
         self._bridge_lines.setPlaceholderText(
@@ -487,7 +487,7 @@ class SettingsPanel(QWidget):
         # Bridge settings
         br = cfg().get("bridges")
         self._bridge_enabled.setChecked(br.get("enabled", False), silent=True)
-        tmap = {"obfs4": 0, "meek-azure": 1, "snowflake": 2, "manual": 3}
+        tmap = {"obfs4": 0, "meek-azure": 1, "manual": 2}
         self._bridge_transport.setCurrentIndex(tmap.get(br.get("transport", "obfs4"), 0))
         self._bridge_lines.setPlainText("\n".join(br.get("lines", [])))
 
@@ -577,7 +577,7 @@ class SettingsPanel(QWidget):
         cfg().set("tor", "strict_nodes", self._tor_strict.isChecked())
 
         # Bridges
-        transport_names = ["obfs4", "meek-azure", "snowflake", "manual"]
+        transport_names = ["obfs4", "meek-azure", "manual"]
         bridge_raw = self._bridge_lines.toPlainText().strip()
         bridge_lines = [l.strip() for l in bridge_raw.splitlines() if l.strip()]
         cfg().set("bridges", "enabled",   self._bridge_enabled.isChecked())

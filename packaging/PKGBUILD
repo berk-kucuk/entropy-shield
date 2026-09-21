@@ -1,7 +1,7 @@
 # Maintainer: Berk Kucuk <berkkucukk@proton.me>
 pkgname=entropy-shield
-pkgver=4.1.2
-pkgrel=1
+pkgver=4.1.3
+pkgrel=2
 pkgdesc="Modern Linux desktop privacy stack — Tor, DNSCrypt, I2P, Onion Server"
 arch=('any')
 url="https://github.com/berk-kucuk/entropy-shield"
@@ -20,9 +20,8 @@ depends=(
     'curl'
 )
 optdepends=(
-    'redsocks: transparent proxy support for I2P routing'
-    'obfs4proxy: Tor bridge pluggable transport (obfs4/meek-azure)'
-    'snowflake-tor: Tor Snowflake bridge pluggable transport'
+    'redsocks: transparent proxy support for I2P routing — AUR only'
+    'obfs4proxy: Tor bridge pluggable transport (obfs4/meek-azure) — AUR only, prebuilt into the Maze ISO by tools/build-aur.sh'
     'bind: dig command for DNS leak tests'
     'firefox: isolated browser integration'
     'chromium: isolated browser integration'

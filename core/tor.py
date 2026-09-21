@@ -258,17 +258,27 @@ class TorManager:
 
         lines = ["UseBridges 1"]
 
-        # Add ClientTransportPlugin for known transports
-        pt_cmds = {
-            "obfs4":      "obfs4 exec /usr/bin/obfs4proxy",
-            "meek-azure": "meek_lite exec /usr/bin/obfs4proxy",
-            "snowflake":  "snowflake exec /usr/bin/snowflake-client "
-                          "-url https://snowflake-broker.torproject.net/ "
-                          "-front cdn.sstatic.net "
-                          "-ice stun:stun.l.google.com:19302",
+        # Pluggable transports need a helper binary. Resolve it through PATH
+        # instead of hardcoding /usr/bin, and give up on bridges entirely when it
+        # is missing: tor REFUSES TO START at all if a ClientTransportPlugin line
+        # points at a binary that is not there, so an absent transport would take
+        # the whole Tor stack down rather than just the bridge feature.
+        pt_specs = {
+            "obfs4":      ("obfs4proxy", "obfs4 exec {binary}"),
+            "meek-azure": ("obfs4proxy", "meek_lite exec {binary}"),
         }
-        if transport in pt_cmds:
-            lines.append(f"ClientTransportPlugin {pt_cmds[transport]}")
+        if transport in pt_specs:
+            binary, template = pt_specs[transport]
+            path = shutil.which(binary)
+            if path is None:
+                self._log(
+                    f"[TOR] Bridges are enabled with the '{transport}' transport, "
+                    f"but '{binary}' is not installed. Starting Tor WITHOUT "
+                    f"bridges — install {binary}, or set Transport to 'manual' in "
+                    f"Settings -> TOR -> BRIDGES to use plain (non-PT) bridges."
+                )
+                return ""
+            lines.append("ClientTransportPlugin " + template.format(binary=path))
 
         for bl in lines_raw:
             # SECURITY: confine each bridge entry to a single line so a malicious

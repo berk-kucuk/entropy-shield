@@ -117,6 +117,23 @@ class OnionServerManager:
                 # user=/group= require Python 3.9+ (project targets 3.10+).
                 popen_kwargs["user"]  = uid
                 popen_kwargs["group"] = gid
+                # extra_groups is what makes the drop complete. user=/group=
+                # call setreuid/setregid only — Popen never calls setgroups
+                # unless this is given, so without it the child KEEPS the
+                # parent's supplementary groups. Started under sudo rather than
+                # systemd that parent is root with group 0 in its list, and the
+                # child would carry it: /etc/sudoers is 0440 root:root, so
+                # pointing serve_dir at /etc would have served a file the
+                # invoking user cannot read — the exact thing the comment above
+                # says cannot happen. Passing the user's own group list also
+                # fixes the other direction, which was silently missing too.
+                try:
+                    popen_kwargs["extra_groups"] = os.getgrouplist(
+                        pwd.getpwuid(uid).pw_name, gid)
+                except (KeyError, OSError):
+                    # Cannot resolve them → grant none rather than inherit
+                    # root's. An empty list is the safe answer here.
+                    popen_kwargs["extra_groups"] = []
                 dropped = True
             else:
                 # No identifiable desktop user — refuse to expose files as root.
