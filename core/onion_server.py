@@ -38,6 +38,26 @@ def _real_user_home() -> str:
     return os.path.expanduser("~")
 
 
+def _public_share_dir(home: str) -> str:
+    """The user's XDG "Public" folder — the directory meant for sharing.
+
+    Read from ~/.config/user-dirs.dirs (XDG_PUBLICSHARE_DIR, which xdg-user-dirs
+    writes and may localise, e.g. "$HOME/Genel"); falls back to ~/Public.
+    """
+    try:
+        with open(os.path.join(home, ".config", "user-dirs.dirs")) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("XDG_PUBLICSHARE_DIR="):
+                    val = line.split("=", 1)[1].strip().strip('"')
+                    val = val.replace("$HOME", home)
+                    if os.path.isabs(val):
+                        return val
+    except OSError:
+        pass
+    return os.path.join(home, "Public")
+
+
 class OnionServerManager:
     def __init__(self, log: Callable[[str], None]):
         self._log   = log
@@ -83,12 +103,32 @@ class OnionServerManager:
     def start(self) -> None:
         local_port = cfg_port("onion_server", "local_port")
         serve_dir  = str(cfg().get("onion_server", "serve_dir")).strip()
+        home = _real_user_home()
+        # The default used to be the WHOLE home directory. http.server lists
+        # directories, so anyone holding the .onion address could browse and
+        # download ~/.ssh, ~/.gnupg, browser profiles, password stores and
+        # wallets — dropping to the user's uid (below) protects root's files,
+        # not the user's own. Default to the folder that exists for sharing.
         if not serve_dir:
-            serve_dir = _real_user_home()
+            serve_dir = _public_share_dir(home)
+            if not os.path.isdir(serve_dir):
+                raise RuntimeError(
+                    f"No folder to publish: {serve_dir} does not exist. "
+                    "Create it and put in it only what you want to share, "
+                    "or choose a folder in Settings → Onion Server.")
 
         if not os.path.isdir(serve_dir):
             raise RuntimeError(
                 f"Serve directory does not exist: {serve_dir}")
+
+        # Refuse the home directory itself (or anything above it) even when
+        # chosen explicitly: it exposes every private file the user has.
+        real_dir, real_home = os.path.realpath(serve_dir), os.path.realpath(home)
+        if real_home == real_dir or real_home.startswith(real_dir.rstrip("/") + "/"):
+            raise RuntimeError(
+                f"Refusing to publish {serve_dir}: it contains your whole home "
+                "directory (SSH keys, browser profiles, passwords). Choose a "
+                "folder that holds only what you want to share.")
 
         # SECURITY: the file server is run as the *invoking desktop user*, never
         # as root.  Otherwise a user could point serve_dir at /root, /etc, … and

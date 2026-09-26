@@ -20,6 +20,30 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=entropy-shield
 TimeoutStopSec=30
+# Sandbox (2026-09). Kept: nft/iptables/ip over netlink and raw sockets, tor,
+# resolvectl and systemctl over D-Bus, writes to /etc (dnscrypt, i2pd,
+# profile.d), /run and /var/lib/tor, and `runuser`/`su` to serve the onion
+# share as the desktop user (so no NoNewPrivileges, no ProtectHome — that
+# share lives in their home and their session bus in /run/user). Taken away:
+# /usr and /boot writes, kernel modules, the clock, hostname, kernel log,
+# cgroups, realtime, namespaces, setuid files, foreign-ABI and non-service
+# syscalls (EPERM, not a kill).
+# Verify: sudo maze-sandbox-check   Relax locally: sudo systemctl edit entropy-shield
+ProtectSystem=true
+PrivateTmp=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

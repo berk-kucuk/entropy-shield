@@ -405,8 +405,17 @@ def _force_remove_firewall() -> None:
                 capture_output=True)
         _sp.run(["nft", "delete", "table", "ip6", "entropy-shield"],
                 capture_output=True)
-        _sp.run(["iptables", "-F"], capture_output=True)
-        _sp.run(["iptables", "-t", "nat", "-F"], capture_output=True)
+        from core.platform import firewall_backend
+        # Flushing iptables wipes EVERY rule on the host — Docker/libvirt NAT,
+        # VPN kill switches, the user's own DROP rules — so it is a last resort
+        # for the one case that needs it: the iptables fallback backend, whose
+        # rules sit in the built-in chains with no table of their own to delete.
+        # With nftables in use (always, on Maze: it is a hard dependency) our
+        # rules live only in the tables removed above, and a "panic" must not
+        # take everyone else's protection down with it.
+        if firewall_backend() == "iptables":
+            _sp.run(["iptables", "-F"], capture_output=True)
+            _sp.run(["iptables", "-t", "nat", "-F"], capture_output=True)
     except Exception:
         pass
 

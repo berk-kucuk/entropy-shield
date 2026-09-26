@@ -285,7 +285,7 @@ class SettingsPanel(QWidget):
 
         # Directory picker: QLineEdit + Browse button side by side
         self._onion_serve_dir = QLineEdit()
-        self._onion_serve_dir.setPlaceholderText("Default: home directory")
+        self._onion_serve_dir.setPlaceholderText("Default: your Public folder (~/Public)")
         browse_btn = QPushButton("Browse")
         browse_btn.setObjectName("closeBtn")
         browse_btn.setFixedWidth(72)
