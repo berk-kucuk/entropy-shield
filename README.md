@@ -13,7 +13,6 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![PyQt6](https://img.shields.io/badge/PyQt6-6.4%2B-41CD52?style=flat-square&logo=qt&logoColor=white)](https://pypi.org/project/PyQt6/)
 [![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black)](https://kernel.org)
-[![NixOS](https://img.shields.io/badge/NixOS-Ready-5277C3?style=flat-square&logo=nixos&logoColor=white)](https://nixos.org)
 
 <br/>
 
@@ -54,7 +53,6 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
-- [Supported Distributions](#supported-distributions)
 - [License](#license)
 
 ---
@@ -133,8 +131,7 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 | **5 themes** | OLED, Light, Binary, Circuit, Pixel — with animated glow border |
 | **System tray** | Minimize to tray with quick Connect/Disconnect/Quit |
 | **Zero footprint** | All config changes are backed up and reverted on disconnect |
-| **Multi-distro support** | Arch, Debian, Fedora, openSUSE, NixOS |
-| **NixOS native** | Declarative NixOS module, no mutable config patching |
+| **Signed pacman package** | Installed and updated from the Maze repository like any other package |
 
 ---
 
@@ -242,7 +239,7 @@ Switch themes at any time via **Settings → General → Theme**. The entire int
 - **PyQt6:** 6.4 or later
 - **Privileges:** A root systemd daemon (`entropy-shield`) performs privileged operations; the GUI itself runs unprivileged and talks to it over a group-restricted Unix socket
 
-**Privacy service dependencies** (installed automatically by the installer):
+**Privacy service dependencies** (pulled in as package dependencies):
 
 | Service | Package |
 |---|---|
@@ -257,65 +254,67 @@ Switch themes at any time via **Settings → General → Theme**. The entire int
 
 ## Installation
 
-### Universal Installer (Recommended)
+### From the Maze repository
 
-Auto-detects your Linux distribution and installs all dependencies.
+**On Maze Linux** the repository is already configured:
 
 ```bash
-git clone https://github.com/berkkucukk/entropy-shield.git
+sudo pacman -S entropy-shield
+```
+
+**On Arch Linux and Arch-based distributions**, add the repository once:
+
+1. Import and trust the Maze signing key:
+
+   ```bash
+   curl -O https://mazerepo.berkkucukk.com.tr/packages/mazelinux.gpg
+   gpg --show-keys --with-fingerprint mazelinux.gpg
+   sudo pacman-key --add mazelinux.gpg
+   sudo pacman-key --lsign-key 7C4D515A6B930CB04794CEF6147C8159B3E2EE5F
+   ```
+
+   The fingerprint `gpg` prints must be `7C4D 515A 6B93 0CB0 4794  CEF6 147C 8159 B3E2 EE5F`.
+
+2. Add the repository to the end of `/etc/pacman.conf`:
+
+   ```ini
+   [mazelinux]
+   SigLevel = Required DatabaseOptional
+   Server = https://mazerepo.berkkucukk.com.tr/packages
+   ```
+
+3. Sync and install:
+
+   ```bash
+   sudo pacman -Syu entropy-shield
+   ```
+
+Optionally install `mazelinux-keyring` as well; it keeps the signing key up to date through pacman.
+
+Remove with `sudo pacman -Rns entropy-shield`.
+
+### Build from source
+
+The package is built from this working tree by `build-pkg.sh` and installed with pacman, exactly like the published one:
+
+```bash
+sudo pacman -S --needed base-devel git
+git clone https://github.com/berk-kucuk/entropy-shield.git
 cd entropy-shield
-sudo bash install.sh
+sudo pacman -S --needed $(bash -c 'source packaging/PKGBUILD; echo "${depends[@]}" "${makedepends[@]}"')
+./build-pkg.sh --install
 ```
 
-The installer handles:
+Without `--install` the package is only built, into `dist-pkg/`.
 
-- Package installation per distro (pacman / apt / dnf / zypper / nix)
-- PyQt6 via system package with pip fallback (PEP 668 compliant)
-- Desktop entry, application icon, launcher at `/usr/local/bin/entropy-shield`
-- Root-owned install under `/opt/entropy-shield` (the user cannot modify code the daemon runs)
-- The `entropy-shield` group + adds you to it, and enables the privileged daemon
-- SELinux context labels on Fedora / RHEL
-- NixOS module generation + `nixos-rebuild switch`
-- Clean reinstall support
-
-> For an unrecognised distro, override detection:
-> ```bash
-> DISTRO_ID=arch sudo bash install.sh
-> ```
-
-### Arch Linux — AUR
-
-```bash
-paru -S entropy-shield
-# or
-yay -S entropy-shield
-```
-
-### Uninstall
-
-```bash
-paru -Rnsc entropy-shield
-# or
-yay -Rnsc entropy-shield
-```
-
-### NixOS
-
-The installer writes a declarative module to `/etc/nixos/entropy-shield.nix` and patches `configuration.nix`, then runs `nixos-rebuild switch`. Services never auto-start at boot — Entropy Shield controls them entirely via on-demand systemd units.
-
-```nix
-imports = [ ./entropy-shield.nix ];
-```
-
-### Manual / Development
+### Development
 
 The GUI runs **unprivileged**; the privileged daemon runs as **root** in a
-separate process. In development you can start each by hand:
+separate process. From a checkout you can start each by hand:
 
 ```bash
-git clone https://github.com/berkkucukk/entropy-shield.git
+git clone https://github.com/berk-kucuk/entropy-shield.git
 cd entropy-shield
-pip install PyQt6
 
 # Terminal 1 — privileged daemon (root). Add yourself to the group first so the
 # GUI can reach the socket:  sudo groupadd -f entropy-shield && sudo usermod -aG entropy-shield "$USER"  (then re-login)
@@ -498,19 +497,6 @@ The daemon identifies the connecting user from the socket peer credentials (`SO_
 | Tor active | Redirected to `DNSPort` | Entire IPv6 stack blocked |
 | DNSCrypt active | Redirected to dnscrypt-proxy | Redirected to `[::1]:port` |
 | Tor + DNSCrypt | Redirected through dnscrypt-proxy | IPv6 blocked by Tor rules |
-
----
-
-## Supported Distributions
-
-| Distribution | Package Manager | Notes |
-|---|---|---|
-| Arch Linux, Manjaro, EndeavourOS, Garuda, CachyOS | `pacman` | All packages in official repos |
-| Debian, Ubuntu, Linux Mint, Kali, Pop!\_OS, Zorin, Parrot | `apt` | i2pd may need a third-party repo |
-| Fedora, RHEL, AlmaLinux, Rocky Linux, Nobara | `dnf` | dnscrypt-proxy / i2pd via Copr if absent |
-| openSUSE Leap / Tumbleweed | `zypper` | |
-| NixOS | `nixos-rebuild` | Declarative module |
-
 
 ---
 

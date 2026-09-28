@@ -30,6 +30,13 @@ _real_user() {
 # the user found and ran the command manually.
 _add_user_to_group() {
     real_user="$(_real_user)"
+    # SUDO_USER is inherited from the environment pacman ran in. In an image
+    # build (mkarchiso's chroot) or any chroot install that is the HOST's user,
+    # who is not an account of this system — nothing to add, and no warning:
+    # the install is not missing a step.
+    if [ -n "$real_user" ] && ! getent passwd "$real_user" >/dev/null 2>&1; then
+        return 0
+    fi
     if [ -n "$real_user" ]; then
         if usermod -aG entropy-shield "$real_user" 2>/dev/null; then
             echo "  Added '$real_user' to the 'entropy-shield' group."
