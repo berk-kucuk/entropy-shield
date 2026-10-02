@@ -46,7 +46,8 @@ APP_GROUP=entropy-shield
 # The unprivileged desktop user that invoked `sudo bash install.sh`.
 REAL_USER="${SUDO_USER:-}"
 ICON_SYS_PIX=/usr/share/pixmaps/entropy-shield.png
-ICON_SYS_HIC=/usr/share/icons/hicolor/256x256/apps/entropy-shield.png
+ICON_HICOLOR=/usr/share/icons/hicolor
+ICON_SIZES=(16 22 24 32 48 64 128 256 512)
 
 # Pick best available logo (oled.png preferred; fallback to others)
 pick_icon() {
@@ -114,7 +115,10 @@ _remove_common() {
 
     step "Removing application files"
     rm -rf "$DEST"
-    rm -f  "$WRAPPER" "$DESKTOP" "$POLKIT" "$ICON_SYS_PIX" "$ICON_SYS_HIC"
+    rm -f  "$WRAPPER" "$DESKTOP" "$POLKIT" "$ICON_SYS_PIX"
+    for size in "${ICON_SIZES[@]}"; do
+        rm -f "$ICON_HICOLOR/${size}x${size}/apps/entropy-shield.png"
+    done
     rm -f  "$SYSTEMD_SERVICE" "$SUDOERS_FILE"
     ok "Application files removed."
 
@@ -633,9 +637,13 @@ common_install() {
 
     step "Installing icon"
     if [[ -n "$ICON_SRC" ]]; then
-        mkdir -p /usr/share/pixmaps /usr/share/icons/hicolor/256x256/apps
+        mkdir -p /usr/share/pixmaps
         cp "$ICON_SRC" "$ICON_SYS_PIX"
-        cp "$ICON_SRC" "$ICON_SYS_HIC"
+        for size in "${ICON_SIZES[@]}"; do
+            local sized="$SCRIPT_DIR/logos/icons/entropy-shield-$size.png"
+            [[ -f "$sized" ]] || continue
+            install -Dm644 "$sized" "$ICON_HICOLOR/${size}x${size}/apps/entropy-shield.png"
+        done
         gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
         ok "Icon installed."
     else
