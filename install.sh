@@ -667,7 +667,7 @@ EOF
     cat > "$DESKTOP" <<EOF
 [Desktop Entry]
 Name=Entropy Shield
-Comment=Network Privacy Stack — Tor, DNSCrypt, I2P
+Comment=Network Privacy Stack — Tor, DNSCrypt, I2P — for Maze Linux
 Exec=entropy-shield
 Icon=${icon_path}
 Type=Application

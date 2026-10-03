@@ -8,6 +8,8 @@
 
 ### Linux Privacy Stack — Tor Transparent Proxy · DNSCrypt · I2P · Onion Server · GUI
 
+*Developed for [Maze Linux](https://github.com/berk-kucuk/MazeLinux)*
+
 [![Website](https://img.shields.io/badge/Website-entropy--shield.berkkucukk.com.tr-0f172a?style=flat-square&logo=googlechrome&logoColor=white)](https://entropy-shield.berkkucukk.com.tr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)

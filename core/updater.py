@@ -1,7 +1,7 @@
 """Auto-update checker — queries GitHub Releases for a newer version."""
 from __future__ import annotations
 
-VERSION = "4.1.2"
+VERSION = "4.1.5"
 _GITHUB_REPO = "berk-kucuk/entropy-shield"
 
 

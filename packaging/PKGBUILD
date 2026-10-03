@@ -1,8 +1,8 @@
 # Maintainer: Berk Kucuk <berkkucukk@proton.me>
 pkgname=entropy-shield
-pkgver=4.1.4
+pkgver=4.1.5
 pkgrel=1
-pkgdesc="Modern Linux desktop privacy stack — Tor, DNSCrypt, I2P, Onion Server"
+pkgdesc="Modern Linux desktop privacy stack — Tor, DNSCrypt, I2P, Onion Server — for Maze Linux"
 arch=('any')
 url="https://github.com/berk-kucuk/entropy-shield"
 license=('MIT')
@@ -60,7 +60,7 @@ EOF
         "$pkgdir/usr/share/applications/entropy-shield.desktop" <<'EOF'
 [Desktop Entry]
 Name=Entropy Shield
-Comment=Network Privacy Stack — Tor, DNSCrypt, I2P
+Comment=Network Privacy Stack — Tor, DNSCrypt, I2P — for Maze Linux
 Exec=entropy-shield
 Icon=entropy-shield
 Type=Application
