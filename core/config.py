@@ -34,6 +34,9 @@ from pathlib import Path
 
 _DIR  = Path.home() / ".config" / "entropy-shield"
 _FILE = _DIR / "config.json"
+# uid that must own _FILE when the root daemon reads a user's config (see
+# use_user_config); None when the GUI reads its own config as that user.
+_OWNER_UID: int | None = None
 
 # A config file is a few KB at most.  Cap the read so a huge (or endless) file
 # planted at the config path cannot exhaust the daemon's memory.
@@ -319,7 +322,16 @@ class Config:
         except OSError:
             return {}
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                return {}
+            # O_NOFOLLOW only guards the LAST component. The directories above
+            # it are the user's, so ~/.config/entropy-shield could be a symlink
+            # to another account's (0700, root-traversable) config, and root
+            # would load that account's bridge lines into this user's Tor.
+            # Whatever path led here, the file must belong to the user whose
+            # config this is meant to be.
+            if _OWNER_UID is not None and st.st_uid != _OWNER_UID:
                 return {}
             # Clear O_NONBLOCK now that we know it is a regular file, so the
             # read behaves normally.
@@ -419,7 +431,7 @@ def use_user_config(uid: int) -> None:
     learns the connecting user's uid from the socket peer credentials and calls
     this so it reads ``~user/.config/entropy-shield/config.json`` instead.
     """
-    global _DIR, _FILE, _instance
+    global _DIR, _FILE, _instance, _OWNER_UID
     import pwd
     try:
         home = Path(pwd.getpwuid(uid).pw_dir)
@@ -427,4 +439,5 @@ def use_user_config(uid: int) -> None:
         return
     _DIR  = home / ".config" / "entropy-shield"
     _FILE = _DIR / "config.json"
+    _OWNER_UID = uid
     _instance = None  # force reload from the new location on next cfg()
