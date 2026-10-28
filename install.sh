@@ -105,11 +105,10 @@ _remove_common() {
     fi
 
     step "Stopping services"
-    for svc in tor dnscrypt-proxy i2pd; do
-        systemctl stop "$svc" 2>/dev/null && ok "Stopped $svc" || true
-    done
-
-    # Stop and disable entropy-shield headless service if installed
+    # Only our own daemon. Stopping it rolls back an active session (its Tor
+    # child, firewall rules, DNS and the dnscrypt/i2pd configs). The system's
+    # tor / dnscrypt-proxy / i2pd units belong to the user — stopping them
+    # here used to take down services they run independently of this app.
     systemctl stop    entropy-shield 2>/dev/null || true
     systemctl disable entropy-shield 2>/dev/null && ok "Disabled entropy-shield service" || true
 
@@ -137,12 +136,14 @@ _remove_common() {
 
     step "Removing user files"
     if [[ -n "$user_home" ]]; then
-        rm -f  "$user_home/.config/autostart/entropy-shield.desktop"
-        rm -rf "$user_home/.config/entropy-shield"
-        rm -f  "$user_home/.config/environment.d/entropy-shield-proxy.conf"
+        # As the user, not root: every directory on these paths is theirs, so a
+        # root rm would follow a symlinked ~/.config anywhere on the system.
+        runuser -u "$real_user" -- rm -rf -- \
+            "$user_home/.config/autostart/entropy-shield.desktop" \
+            "$user_home/.config/entropy-shield" \
+            "$user_home/.config/environment.d/entropy-shield-proxy.conf" \
+            2>/dev/null || true
         # Remove instance lock if present
-        local rt_dir
-        rt_dir="$(getent passwd "$real_user" | cut -d: -f6 2>/dev/null || echo "")"
         local uid
         uid="$(id -u "$real_user" 2>/dev/null || echo "")"
         [[ -n "$uid" ]] && rm -f "/run/user/$uid/entropy-shield.lock" || true
@@ -298,12 +299,11 @@ _aur_install() {
 }
 
 pkg_arch() {
-    step "Refreshing package databases (pacman)"
-    # Refresh only — a full `-Syu` mid-install could pull a huge upgrade the
-    # user did not ask for, while a partial upgrade (`-Sy` + install) is the
-    # documented risk. We refresh once here, then install against fresh DBs.
-    pacman -Sy --noconfirm 2>/dev/null \
-        || warn "pacman -Sy failed — continuing with cached databases."
+    # No `pacman -Sy` here: refreshing the databases and then installing
+    # without upgrading is a partial upgrade, which Arch does not support and
+    # which can leave the system with mismatched libraries. Install against the
+    # current databases; if a package is not found, the error below says what
+    # is missing and the user can run `pacman -Syu` first.
 
     step "Installing required packages (pacman)"
     install_critical pacman \
@@ -311,7 +311,7 @@ pkg_arch() {
         tor nftables iptables-nft iproute2
 
     step "Installing optional packages (pacman)"
-    install_optional pacman dnscrypt-proxy i2pd polkit conntrack-tools bind
+    install_optional pacman dnscrypt-proxy i2pd conntrack-tools bind curl
     _aur_install redsocks
     _aur_install obfs4proxy
 }
@@ -325,16 +325,8 @@ pkg_debian() {
         python3 python3-pip \
         tor nftables iptables iproute2
 
-    # polkit: package name changed in Debian 12 / Ubuntu 22.10
-    step "Installing polkit (apt)"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        policykit-1 2>/dev/null || \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        polkitd libpolkit-agent-1-0 2>/dev/null || \
-        warn "polkit not installed — some privilege escalation features may not work."
-
     step "Installing optional packages (apt)"
-    install_optional apt dnscrypt-proxy i2pd redsocks obfs4proxy conntrack dnsutils
+    install_optional apt dnscrypt-proxy i2pd redsocks obfs4proxy conntrack dnsutils curl
 
     _install_pyqt6 apt python3-pyqt6
 }
@@ -346,30 +338,26 @@ pkg_fedora() {
         tor nftables iptables iproute
 
     step "Installing optional packages (dnf)"
-    install_optional dnf polkit conntrack-tools bind-utils
+    install_optional dnf conntrack-tools bind-utils curl
+
+    # Third-party COPR repositories are NOT enabled automatically: a personal
+    # COPR is a package source run by a single individual, and enabling it as
+    # root hands them every future update of everything it ships. Only the
+    # i2pd upstream project's own COPR is used (below).
 
     # redsocks
     command -v redsocks &>/dev/null || \
-        dnf install -y -q redsocks 2>/dev/null || {
-            info "redsocks not in main repo — trying COPR..."
-            dnf copr enable -y zawertun/redsocks 2>/dev/null || true
-            dnf install -y -q redsocks 2>/dev/null || \
-                warn "redsocks not installed. Transparent I2P routing unavailable."
-        }
+        dnf install -y -q redsocks 2>/dev/null || \
+        warn "redsocks not installed. Transparent I2P routing unavailable."
 
     # obfs4proxy (for Tor bridges)
     command -v obfs4proxy &>/dev/null || \
         dnf install -y -q obfs4proxy 2>/dev/null || \
         warn "obfs4proxy not installed. Tor bridge support (obfs4) unavailable."
 
-    # dnscrypt-proxy
-    dnf install -y -q dnscrypt-proxy 2>/dev/null || {
-        info "dnscrypt-proxy not in main repo — trying COPR..."
-        dnf copr enable -y varlad/dnscrypt-proxy 2>/dev/null || \
-        dnf copr enable -y cromerc/dnscrypt-proxy 2>/dev/null || true
-        dnf install -y -q dnscrypt-proxy 2>/dev/null || \
-            warn "dnscrypt-proxy not installed. Install manually if needed."
-    }
+    # dnscrypt-proxy (packaged in Fedora's own repositories)
+    dnf install -y -q dnscrypt-proxy 2>/dev/null || \
+        warn "dnscrypt-proxy not installed. Install manually if needed."
 
     # i2pd
     dnf install -y -q i2pd 2>/dev/null || {
@@ -392,9 +380,32 @@ pkg_opensuse() {
         tor nftables iptables iproute2
 
     step "Installing optional packages (zypper)"
-    install_optional zypper polkit dnscrypt-proxy i2pd redsocks obfs4proxy conntrack-tools bind-utils
+    install_optional zypper dnscrypt-proxy i2pd redsocks obfs4proxy conntrack-tools bind-utils curl
 
     _install_pyqt6 zypper python3-qt6
+}
+
+# Copy the application into $DEST as root-owned, user-read-only files.
+#
+# SECURITY: the root daemon imports this code. Only the runtime files are
+# copied (not .git, packaging, screenshots …), symlinks are dereferenced, and
+# any link that survives is deleted: a symlink copied verbatim from the
+# user's checkout (say core/x.py -> ~/src/x.py) would keep root importing a
+# file the user can edit long after the install.
+_copy_app() {
+    mkdir -p "$DEST"
+    local item
+    for item in main.py core gui Fonts logos LICENSE entropy-shield.service; do
+        [[ -e "$SCRIPT_DIR/$item" ]] || continue
+        cp -RL --no-preserve=ownership "$SCRIPT_DIR/$item" "$DEST/"
+    done
+    find "$DEST" -type l -delete
+    find "$DEST" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$DEST" -name "*.pyc" -delete 2>/dev/null || true
+    chown -R root:root "$DEST"
+    find "$DEST" -type d -exec chmod 755 {} +
+    find "$DEST" -type f -exec chmod 644 {} +
+    chmod 755 "$DEST/main.py" "$DEST/core/daemon.py"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -403,17 +414,7 @@ pkg_opensuse() {
 
 do_install_nixos() {
     step "Copying application to $DEST"
-    mkdir -p "$DEST"
-    cp -r "$SCRIPT_DIR/." "$DEST/"
-    find "$DEST" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-    find "$DEST" -name "*.pyc" -delete 2>/dev/null || true
-    # SECURITY: the root daemon runs this code — it MUST be root-owned and not
-    # writable by the desktop user (otherwise a local user could modify it and
-    # gain root).  Enforce regardless of the caller's umask.
-    chown -R root:root "$DEST"
-    find "$DEST" -type d -exec chmod 755 {} +
-    find "$DEST" -type f -exec chmod 644 {} +
-    chmod 755 "$DEST/main.py" "$DEST/core/daemon.py"
+    _copy_app
     ok "Application copied."
 
     local nixdir=/etc/nixos
@@ -535,7 +536,25 @@ ${nix_user_group}
       Restart              = "on-failure";
       RestartSec           = 10;
       RuntimeDirectory     = "entropy-shield";
-      RuntimeDirectoryMode = "0750";
+      RuntimeDirectoryMode = "0751";
+      TimeoutStopSec       = 180;
+      # Same sandbox as entropy-shield.service (see the comments there).
+      ProtectSystem           = "true";
+      PrivateTmp              = true;
+      ProtectClock            = true;
+      ProtectHostname         = true;
+      ProtectKernelLogs       = true;
+      ProtectKernelModules    = true;
+      ProtectKernelTunables   = true;
+      ProtectControlGroups    = true;
+      RestrictRealtime        = true;
+      RestrictSUIDSGID        = true;
+      RestrictNamespaces      = true;
+      LockPersonality         = true;
+      SystemCallArchitectures = "native";
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+      SystemCallFilter        = [ "@system-service" ];
+      SystemCallErrorNumber   = "EPERM";
     };
   };
 }
@@ -621,24 +640,12 @@ common_install() {
     fi
 
     step "Copying application to $DEST"
-    mkdir -p "$DEST"
-    cp -r "$SCRIPT_DIR/." "$DEST/"
-    find "$DEST" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-    find "$DEST" -name "*.pyc" -delete 2>/dev/null || true
-    # SECURITY: the privileged daemon runs this code as root.  It MUST be owned
-    # by root and non-writable by the desktop user, otherwise a local attacker
-    # could modify it and gain root.  This is the whole point of dropping the
-    # passwordless-sudo model.
-    chown -R root:root "$DEST"
-    find "$DEST" -type d -exec chmod 755 {} +
-    find "$DEST" -type f -exec chmod 644 {} +
-    chmod 755 "$DEST/main.py" "$DEST/core/daemon.py"
+    _copy_app
     ok "Application copied (root-owned, user-read-only)."
 
     step "Installing icon"
     if [[ -n "$ICON_SRC" ]]; then
-        mkdir -p /usr/share/pixmaps
-        cp "$ICON_SRC" "$ICON_SYS_PIX"
+        install -Dm644 "$ICON_SRC" "$ICON_SYS_PIX"
         for size in "${ICON_SIZES[@]}"; do
             local sized="$SCRIPT_DIR/logos/icons/entropy-shield-$size.png"
             [[ -f "$sized" ]] || continue
@@ -685,7 +692,7 @@ EOF
 
     step "Installing & enabling the privileged daemon service"
     if [[ -f "$SCRIPT_DIR/entropy-shield.service" ]]; then
-        cp "$SCRIPT_DIR/entropy-shield.service" "$SYSTEMD_SERVICE"
+        install -Dm644 "$SCRIPT_DIR/entropy-shield.service" "$SYSTEMD_SERVICE"
         systemctl daemon-reload 2>/dev/null || true
         ok "Service file installed → $SYSTEMD_SERVICE"
         if systemctl enable --now entropy-shield 2>/dev/null; then
@@ -764,10 +771,8 @@ _clean_previous() {
 
     if [[ -d "$DEST" ]]; then
         info "Existing installation found — performing clean reinstall..."
-        for svc in tor dnscrypt-proxy i2pd; do
-            systemctl stop "$svc" 2>/dev/null || true
-        done
-        # Stop the old service before overwriting its unit/code.
+        # Stop the old daemon before overwriting its unit/code (this also rolls
+        # back any active session; system tor/dnscrypt/i2pd are left alone).
         systemctl stop entropy-shield 2>/dev/null || true
         rm -rf "$DEST"
         rm -f "$WRAPPER"

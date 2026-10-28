@@ -1,10 +1,12 @@
 from __future__ import annotations
+import ipaddress
 import os
 import pwd
 import re
 import subprocess
 import shutil
-from typing import Callable
+import threading
+from typing import Callable, NamedTuple
 
 from .config import cfg, cfg_port
 from .platform import firewall_backend
@@ -39,6 +41,37 @@ _TOR_LOCAL_NETS = [
 ]
 
 _NFT_TABLE = "entropy-shield"
+
+# iptables fallback: our rules live in these chains, jumped to from the top of
+# the matching built-in chain (see FirewallManager._ipt_hook).
+_IPT_CHAINS = {
+    "OUTPUT":  "ENTROPY_SHIELD_OUT",
+    "FORWARD": "ENTROPY_SHIELD_FWD",
+}
+_IPT_TABLES = {"OUTPUT": ("filter", "nat"), "FORWARD": ("filter",)}
+
+
+def purge_iptables_chains() -> None:
+    """Unhook and delete every iptables chain Entropy Shield may have created.
+
+    Works without any FirewallManager state, so the daemon's startup heal and
+    the panic path can clean up after a crashed session — and it touches only
+    our own chains, never the rest of the host's ruleset.
+    """
+    for binary in ("iptables", "ip6tables"):
+        if not shutil.which(binary):
+            continue
+        for builtin, chain in _IPT_CHAINS.items():
+            for table in _IPT_TABLES[builtin]:
+                # A crash between two hooks can leave more than one jump.
+                for _ in range(8):
+                    r = subprocess.run(
+                        [binary, "-t", table, "-D", builtin, "-j", chain],
+                        capture_output=True)
+                    if r.returncode != 0:
+                        break
+                subprocess.run([binary, "-t", table, "-F", chain], capture_output=True)
+                subprocess.run([binary, "-t", table, "-X", chain], capture_output=True)
 
 # Known DNS-over-HTTPS resolver IPs. Blocked in DNSCrypt-only mode so apps
 # cannot bypass DNSCrypt by hardcoding their own DoH endpoint.
@@ -127,6 +160,157 @@ def _i2pd_uid() -> str | None:
     return None
 
 
+# ── VPN coexistence ───────────────────────────────────────────
+#
+# The kill switch drops every packet that is not redirected into Tor/I2P.  A
+# VPN's OUTER packets (WireGuard/OpenVPN UDP to the VPN server, Tailscale's
+# peer traffic, …) are among them, so with a VPN up the tunnel died, Tor's own
+# traffic — routed into that tunnel — went nowhere, and Connect hung in
+# bootstrap.  We therefore exempt exactly the tunnel's transport: its server
+# endpoints and the firewall marks VPN software puts on its own packets.
+# Traffic INSIDE the tunnel is unaffected and still goes through Tor.
+
+_TUNNEL_PREFIXES = ("wg", "tun", "tap", "ppp", "tailscale", "nordlynx",
+                    "proton", "mullvad", "zt", "vti", "ipsec", "nebula", "utun")
+
+
+class VpnExempt(NamedTuple):
+    v4:    tuple[str, ...]                      # endpoint addresses / CIDRs
+    v6:    tuple[str, ...]
+    marks: tuple[tuple[int, int | None], ...]   # (fwmark, mask)
+    ifaces: tuple[str, ...]                     # tunnel interfaces seen (for logs)
+
+
+_NO_VPN = VpnExempt((), (), (), ())
+
+
+def _ip_or_net(text: str):
+    """Parse *text* as an address or network; None if it is neither.
+
+    Everything that reaches a ruleset passes through ipaddress, so nothing
+    from command output or the user's config is interpolated verbatim.
+    """
+    try:
+        return ipaddress.ip_network(text.strip().strip("[]"), strict=False)
+    except ValueError:
+        return None
+
+
+def _tunnel_ifaces() -> list[str]:
+    try:
+        r = subprocess.run(["ip", "-o", "-d", "link", "show", "up"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        name = parts[1].strip().split("@")[0]
+        detail = parts[2]
+        if (name.startswith(_TUNNEL_PREFIXES) or " wireguard " in detail
+                or " tun " in detail):
+            out.append(name)
+    return out
+
+
+def detect_vpn() -> VpnExempt:
+    """Find the transport of every active VPN so the kill switch spares it."""
+    from .config import cfg as _cfg
+    v4: set[str] = set()
+    v6: set[str] = set()
+    marks: set[tuple[int, int | None]] = set()
+
+    def _add(text: str) -> None:
+        net = _ip_or_net(text)
+        if net is None or net.is_loopback or net.is_unspecified:
+            return
+        (v4 if net.version == 4 else v6).add(str(net))
+
+    # Addresses the user listed explicitly (always honoured).
+    for item in _cfg().get("vpn", "allow"):
+        _add(item)
+
+    ifaces = _tunnel_ifaces()
+    if not _cfg().get("vpn", "auto_detect") or not ifaces:
+        return VpnExempt(tuple(sorted(v4)), tuple(sorted(v6)), (), tuple(ifaces))
+
+    # WireGuard (kernel module, wg-quick, NetworkManager, Mullvad, Proton, …):
+    # peer endpoints plus the fwmark wg-quick sets on encapsulated packets.
+    if shutil.which("wg"):
+        try:
+            r = subprocess.run(["wg", "show", "all", "endpoints"],
+                               capture_output=True, text=True, timeout=5)
+            for line in r.stdout.splitlines():
+                cols = line.split()
+                if len(cols) >= 3 and cols[2] != "(none)":
+                    _add(cols[2].rsplit(":", 1)[0])
+            r = subprocess.run(["wg", "show", "all", "fwmark"],
+                               capture_output=True, text=True, timeout=5)
+            for line in r.stdout.splitlines():
+                cols = line.split()
+                if len(cols) >= 2 and cols[1] != "off":
+                    try:
+                        marks.add((int(cols[1], 0) & 0xFFFFFFFF, None))
+                    except ValueError:
+                        pass
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    # OpenVPN, NetworkManager VPNs, strongSwan, …: while a tunnel is up they
+    # pin the server with a host route through the physical uplink.
+    for fam, flag in ((4, "-4"), (6, "-6")):
+        try:
+            r = subprocess.run(["ip", flag, "-o", "route", "show", "table", "all"],
+                               capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for line in r.stdout.splitlines():
+            cols = line.split()
+            if not cols or "via" not in cols or "dev" not in cols:
+                continue
+            dev = cols[cols.index("dev") + 1] if cols.index("dev") + 1 < len(cols) else ""
+            if dev in ifaces or dev.startswith(_TUNNEL_PREFIXES):
+                continue
+            dst = cols[0]
+            host_len = 32 if fam == 4 else 128
+            net = _ip_or_net(dst)
+            if net is not None and net.prefixlen == host_len and net.is_global:
+                _add(dst)
+
+    # Tailscale marks its own packets with 0x80000 in the 0xff0000 range.
+    if any(i.startswith("tailscale") for i in ifaces):
+        marks.add((0x80000, 0xFF0000))
+
+    return VpnExempt(tuple(sorted(v4)), tuple(sorted(v6)),
+                     tuple(sorted(marks, key=lambda m: (m[0], m[1] or 0))),
+                     tuple(ifaces))
+
+
+def _nft_vpn_lines(vpn: VpnExempt, fam: int) -> list[str]:
+    out = []
+    for mark, mask in vpn.marks:
+        if mask is None:
+            out.append(f"        meta mark 0x{mark:x} return")
+        else:
+            out.append(f"        meta mark & 0x{mask:x} == 0x{mark:x} return")
+    key = "ip" if fam == 4 else "ip6"
+    for net in (vpn.v4 if fam == 4 else vpn.v6):
+        if _ip_or_net(net) is not None:
+            out.append(f"        {key} daddr {net} return")
+    return out
+
+
+def ipv6_enabled() -> bool:
+    """False when the kernel runs without IPv6 (ipv6.disable=1, no module).
+
+    nft refuses to load an ip6 table there, and the whole script — kill switch
+    included — would fail; without IPv6 there is also nothing to leak.
+    """
+    return os.path.exists("/proc/net/if_inet6")
+
+
 def _real_user() -> tuple[int, pwd.struct_passwd] | None:
     for var in ("PKEXEC_UID", "SUDO_UID"):
         val = os.environ.get(var)
@@ -159,7 +343,9 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
                tor_trans: int, tor_dns: int, dns_port: int,
                tor_uid: str | None,
                use_i2p: bool = False,
-               i2p_transparent: bool = False) -> str:
+               i2p_transparent: bool = False,
+               vpn: VpnExempt = _NO_VPN,
+               ipv6: bool = True) -> str:
 
     # SECURITY: everything below is interpolated into a script handed to
     # `nft -f -` as root.  The port numbers originate in the desktop user's
@@ -178,12 +364,23 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
 
     # ── nat output chain ──────────────────────────────────────
     if use_tor or use_dnscrypt or (i2p_only and i2p_transparent):
+        # -100 (dstnat) — the slot iptables' nat OUTPUT uses.  NAT must run
+        # BEFORE the filter chain below (priority 0) so the filter sees the
+        # post-redirect destination (127.0.0.1:TransPort) and can drop every
+        # packet that was *not* redirected.  At priority 100 the filter ran
+        # first, saw the original destination and had to let all TCP through,
+        # so whatever the SYN-only redirect missed — e.g. a mid-stream packet
+        # of a connection opened before connect(), which conntrack picks up
+        # as NEW after the flush — went straight out with the real IP.
         lines += ["    chain output {",
-                  "        type nat hook output priority 100 ;"]
+                  "        type nat hook output priority -100 ;"]
 
         if use_tor:
             if tor_uid:
                 lines.append(f"        meta skuid {tor_uid} return")
+            # A TCP-based VPN (OpenVPN over TCP) must reach its server directly,
+            # not be redirected into Tor's TransPort.
+            lines += _nft_vpn_lines(vpn, 4)
 
             # Per-app routing: bypass (direct clearnet) and block rules
             bypass_uids, block_uids = _per_app_rules()
@@ -218,6 +415,7 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
             i2pd_uid = _i2pd_uid()
             if i2pd_uid:
                 lines.append(f"        meta skuid {i2pd_uid} return")
+            lines += _nft_vpn_lines(vpn, 4)
             for net in _LOCAL_NETS:
                 lines.append(f"        ip daddr {net} return")
             lines.append(
@@ -236,6 +434,9 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
                   "        type filter hook output priority 0 ;"]
         if tor_uid:
             lines.append(f"        meta skuid {tor_uid} return")
+        # The VPN's own transport (outer packets to its server) — see
+        # detect_vpn().  Without it an active VPN dies and Tor cannot start.
+        lines += _nft_vpn_lines(vpn, 4)
         # Per-app: bypass UIDs go direct (allow all protocols incl. UDP).
         # Block UIDs are fully isolated here before any other rule.
         bypass_f, block_f = _per_app_rules()
@@ -243,11 +444,23 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
             lines.append(f"        meta skuid {uid} return")
         for uid in block_f:
             lines.append(f"        meta skuid {uid} drop")
+        # Packets conntrack cannot place (stray FIN/RST of a flushed
+        # connection, …) are never redirected — the transparent-proxy leak the
+        # Tor project's TransparentProxy guide warns about.
+        lines.append("        ct state invalid drop")
+        # Anything routed via loopback never leaves the machine.  This covers
+        # the redirected traffic AND its replies: TransPort answers to the
+        # host's own address (198.51.x, CGNAT 100.64/10, a public IP …), which
+        # is not in the local-net list below.
+        lines.append('        oifname "lo" return')
+        # The nat chain has already run (priority -100): redirected TCP and
+        # DNS now carry daddr 127.0.0.1 and pass the returns above/below.
+        # Everything else — UDP, ICMP, SCTP and any TCP the redirect did not
+        # catch — is dropped, so the ruleset fails closed.
         for net in _TOR_LOCAL_NETS:
             lines.append(f"        ip daddr {net} return")
         lines += [
-            "        udp dport 53 return",        # DNS → nat chain → Tor DNSPort
-            "        meta l4proto != tcp drop",   # drop UDP, ICMP, SCTP, etc.
+            "        drop",
             "    }",
         ]
     elif i2p_only:
@@ -257,12 +470,22 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
         if i2pd_uid:
             # i2pd needs UDP for SSU2 (peer-to-peer I2P transport)
             lines.append(f"        meta skuid {i2pd_uid} return")
+        lines += _nft_vpn_lines(vpn, 4)
+        lines.append('        oifname "lo" return')   # see the Tor chain
         for net in _LOCAL_NETS:
             lines.append(f"        ip daddr {net} return")
         lines += [
             "        udp dport 53 drop",
             "        tcp dport 53 drop",
-            "        meta l4proto != tcp drop",   # drop UDP, ICMP, SCTP, etc.
+        ]
+        # Transparent mode: redirected TCP now points at 127.0.0.1:redsocks
+        # (returned above as local).  Proxy-only mode: apps reach the I2P
+        # proxies on 127.0.0.1.  Either way nothing else may leave with the
+        # real IP — the old "meta l4proto != tcp drop" let every direct TCP
+        # connection out, unlike the iptables backend's catch-all DROP.
+        lines += [
+            "        ct state invalid drop",
+            "        drop",
             "    }",
         ]
 
@@ -278,6 +501,10 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
             "    chain filter_output {",
             "        type filter hook output priority 0 ;",
             f"        ip daddr {{ {doh_set} }} tcp dport 443 drop",
+            # DNS-over-TLS (TCP) and DNS-over-QUIC (UDP) to any resolver carry
+            # lookups around dnscrypt-proxy just like DoH does.
+            "        tcp dport 853 drop",
+            "        udp dport 853 drop",
             "    }",
         ]
 
@@ -295,18 +522,25 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
     lines.append("}")
 
     # ── ip6 table ─────────────────────────────────────────────
-    if use_tor:
+    v6_block = [
+        "    chain output {",
+        "        type filter hook output priority 0 ;",
+        '        oifname "lo" return',
+        "        ip6 daddr ::1 return",        # loopback
+        "        ip6 daddr fe80::/10 return",  # link-local (LAN)
+        *_nft_vpn_lines(vpn, 6),
+        "        drop",
+        "    }",
+    ]
+    if not ipv6:
+        pass  # kernel without IPv6: no ip6 family to load, nothing to leak
+    elif use_tor:
         # Block all IPv6: Tor's TransPort only listens on IPv4 (127.0.0.1).
         # Any IPv6 connection would reach the internet directly, leaking the
         # real IPv6 address.
         lines += [
             f"\ntable ip6 {_NFT_TABLE} {{",
-            "    chain output {",
-            "        type filter hook output priority 0 ;",
-            "        ip6 daddr ::1 return",        # loopback
-            "        ip6 daddr fe80::/10 return",  # link-local (LAN)
-            "        drop",
-            "    }",
+            *v6_block,
             "    chain forward {",
             "        type filter hook forward priority 0 ;",
             "        drop",
@@ -319,7 +553,7 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
         lines += [
             f"\ntable ip6 {_NFT_TABLE} {{",
             "    chain output {",
-            "        type nat hook output priority 100 ;",
+            "        type nat hook output priority -100 ;",
             f"        udp dport 53 redirect to :{dns_port}",
             f"        tcp dport 53 redirect to :{dns_port}",
             "    }",
@@ -333,12 +567,7 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
         # I2P-only: block all IPv6 (I2P is IPv4-only in most deployments).
         lines += [
             f"\ntable ip6 {_NFT_TABLE} {{",
-            "    chain output {",
-            "        type filter hook output priority 0 ;",
-            "        ip6 daddr ::1 return",
-            "        ip6 daddr fe80::/10 return",
-            "        drop",
-            "    }",
+            *v6_block,
             "    chain forward {",
             "        type filter hook forward priority 0 ;",
             "        drop",
@@ -354,31 +583,37 @@ def _nft_build(use_tor: bool, use_dnscrypt: bool,
 class FirewallManager:
     def __init__(self, log: Callable[[str], None]):
         self._log            = log
-        self._ipt_rules:     list[list[str]] = []
-        self._ip6t_rules:    list[list[str]] = []
+        self._ipt_hooks:     list[tuple[str, str, str]] = []
         self._i2p_http:      int             = 4444
         self._i2p_socks:     int             = 4447
         self._tor_socks:     int             = 9050
         self._backend:       str             = ""
         self._use_tor:       bool            = False
+        self._rules:         tuple | None    = None   # last apply() args
+        self._vpn:           VpnExempt       = _NO_VPN
+        # Serialises apply/remove with the watchdog's re-apply.
+        self._lock = threading.RLock()
 
     def apply(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool,
               i2p_transparent: bool = False) -> None:
         self._log("[FW] Applying firewall rules...")
-        self._backend = firewall_backend()
 
-        tor_trans = cfg_port("tor", "trans_port")
-        tor_dns   = cfg_port("tor", "dns_port")
-        dns_port  = cfg_port("dnscrypt", "port")
-        self._i2p_http  = cfg_port("i2p", "http_port")
-        self._i2p_socks = cfg_port("i2p", "socks_port")
+        self._vpn = detect_vpn()
+        if self._vpn.ifaces:
+            self._log(f"[FW] VPN interface(s) detected: {', '.join(self._vpn.ifaces)}.")
+        if self._vpn.v4 or self._vpn.v6 or self._vpn.marks:
+            n = len(self._vpn.v4) + len(self._vpn.v6) + len(self._vpn.marks)
+            self._log(f"[FW] Exempting the VPN tunnel's own transport "
+                      f"({n} endpoint/mark rule(s)); traffic inside it still "
+                      f"goes through the privacy layers.")
+        elif self._vpn.ifaces and (use_tor or use_i2p):
+            self._log("[FW] Warning: could not determine this VPN's server "
+                      "endpoint — if the tunnel drops, add its server address "
+                      "to \"vpn\": {\"allow\": [...]} in config.json.")
 
-        if self._backend == "nftables":
-            self._apply_nft(use_tor, use_dnscrypt, tor_trans, tor_dns,
-                            dns_port, use_i2p, i2p_transparent)
-        else:
-            self._apply_ipt(use_tor, use_dnscrypt, tor_trans, tor_dns,
-                            dns_port, use_i2p, i2p_transparent)
+        with self._lock:
+            self._rules = (use_tor, use_dnscrypt, use_i2p, i2p_transparent)
+            self._apply_rules()
 
         # ── system proxy ──────────────────────────────────────────
         # When Tor is active, point the system SOCKS proxy to Tor's
@@ -411,7 +646,7 @@ class FirewallManager:
                     )
                 else:
                     self._log(
-                        "[FW] I2P proxy-only mode. DNS blocked. "
+                        "[FW] I2P proxy-only mode. DNS and direct connections blocked. "
                         f"Set apps to use HTTP proxy 127.0.0.1:{self._i2p_http} "
                         f"or SOCKS 127.0.0.1:{self._i2p_socks}."
                     )
@@ -424,7 +659,74 @@ class FirewallManager:
         # continue flowing to their original destinations — a classic bypass.
         self._flush_conntrack()
 
+    def _apply_rules(self) -> None:
+        """Load the ruleset for self._rules with the best working backend."""
+        use_tor, use_dnscrypt, use_i2p, i2p_transparent = self._rules
+        tor_trans = cfg_port("tor", "trans_port")
+        tor_dns   = cfg_port("tor", "dns_port")
+        dns_port  = cfg_port("dnscrypt", "port")
+        self._i2p_http  = cfg_port("i2p", "http_port")
+        self._i2p_socks = cfg_port("i2p", "socks_port")
+
+        self._backend = firewall_backend()
+        if self._backend == "nftables":
+            try:
+                self._apply_nft(use_tor, use_dnscrypt, tor_trans, tor_dns,
+                                dns_port, use_i2p, i2p_transparent)
+                return
+            except RuntimeError as exc:
+                # e.g. a kernel built without some nf_tables expression.  Fall
+                # back rather than leave the user without a kill switch.
+                if not shutil.which("iptables"):
+                    raise
+                self._log(f"[FW] nftables failed ({exc}) — falling back to iptables.")
+                for fam in ("ip", "ip6"):
+                    subprocess.run(["nft", "delete", "table", fam, _NFT_TABLE],
+                                   capture_output=True)
+                self._backend = "iptables"
+        self._apply_ipt(use_tor, use_dnscrypt, tor_trans, tor_dns,
+                        dns_port, use_i2p, i2p_transparent)
+
+    def rules_intact(self) -> bool:
+        """True while our ruleset is still loaded in the kernel."""
+        with self._lock:
+            if not self._backend or not self._rules:
+                return True
+            if self._backend == "nftables":
+                r = subprocess.run(["nft", "list", "table", "ip", _NFT_TABLE],
+                                   capture_output=True)
+                return r.returncode == 0
+            for binary, table, builtin in self._ipt_hooks:
+                r = subprocess.run(
+                    [binary, "-t", table, "-C", builtin, "-j", _IPT_CHAINS[builtin]],
+                    capture_output=True)
+                if r.returncode != 0:
+                    return False
+            return True
+
+    def reapply_if_missing(self) -> bool:
+        """Re-load the ruleset if another tool removed it.  Returns True if so.
+
+        `ufw reload`, `firewall-cmd --reload`, `iptables -F`, `nft flush
+        ruleset`, a NetworkManager dispatcher script … can all wipe our rules
+        while the GUI keeps saying PROTECTED.  The session watchdog calls this.
+        """
+        with self._lock:
+            if self.rules_intact():
+                return False
+            self._log("[FW] WARNING: firewall rules were removed by another "
+                      "program — re-applying the kill switch.")
+            self._ipt_hooks.clear()
+            self._apply_rules()
+            self._flush_conntrack()
+            return True
+
     def remove(self) -> None:
+        with self._lock:
+            self._rules = None
+            self._remove()
+
+    def _remove(self) -> None:
         if not self._backend:
             return
         self._log("[FW] Removing firewall rules...")
@@ -446,20 +748,19 @@ class FirewallManager:
                             f"{_NFT_TABLE}: {r.stderr.strip()}"
                         )
         else:
-            for rule in reversed(self._ipt_rules):
-                del_rule = ["-D" if a == "-A" else a for a in rule]
-                r = subprocess.run(["iptables"] + del_rule,
-                                   capture_output=True, text=True)
-                if r.returncode != 0:
+            for binary, table, builtin in reversed(self._ipt_hooks):
+                chain = _IPT_CHAINS[builtin]
+                r = subprocess.run(
+                    [binary, "-t", table, "-D", builtin, "-j", chain],
+                    capture_output=True, text=True)
+                if r.returncode != 0 and binary == "iptables":
                     self._log(
-                        f"[FW] Warning: iptables deletion failed: "
+                        f"[FW] Warning: could not unhook {table}/{chain}: "
                         f"{r.stderr.strip()}"
                     )
-            self._ipt_rules.clear()
-            for rule in reversed(self._ip6t_rules):
-                del_rule = ["-D" if a == "-A" else a for a in rule]
-                subprocess.run(["ip6tables"] + del_rule, capture_output=True)
-            self._ip6t_rules.clear()
+                subprocess.run([binary, "-t", table, "-F", chain], capture_output=True)
+                subprocess.run([binary, "-t", table, "-X", chain], capture_output=True)
+            self._ipt_hooks.clear()
         # Mark backend cleared so a second remove() call is a safe no-op.
         self._backend = ""
 
@@ -506,28 +807,86 @@ class FirewallManager:
         uid = _tor_uid() if use_tor else None
         script = _nft_build(
             use_tor, use_dnscrypt, tor_trans, tor_dns, dns_port, uid,
-            use_i2p, i2p_transparent,
+            use_i2p, i2p_transparent, vpn=self._vpn, ipv6=ipv6_enabled(),
         )
         _nft(script)
 
     # ── iptables ──────────────────────────────────────────────
 
-    def _ipt_add(self, *args: str) -> None:
-        r = subprocess.run(["iptables"] + list(args),
+    def _ipt_hook(self, binary: str, table: str, builtin: str) -> str:
+        """Return our own chain for *builtin*, creating and hooking it once.
+
+        Rules used to be appended (-A) straight to the built-in chains, i.e.
+        BEHIND whatever was already there: one pre-existing ACCEPT (ufw,
+        firewalld, docker, a VPN client) and the kill switch never ran.  Our
+        rules now live in a dedicated chain that is jumped to from position 1
+        of the built-in chain, so they are evaluated first, and removal is a
+        matter of unhooking and deleting that chain — no rule-by-rule undo,
+        no host-wide flush.
+        """
+        chain = _IPT_CHAINS[builtin]
+        key = (binary, table, builtin)
+        if key in self._ipt_hooks:
+            return chain
+        subprocess.run([binary, "-t", table, "-N", chain], capture_output=True)
+        subprocess.run([binary, "-t", table, "-F", chain], capture_output=True)
+        r = subprocess.run([binary, "-t", table, "-I", builtin, "1", "-j", chain],
                            capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(
-                f"iptables {' '.join(args)}: {r.stderr.strip()}")
-        if "-A" in args:
-            self._ipt_rules.append(list(args))
+                f"{binary} -t {table} -I {builtin}: {r.stderr.strip()}")
+        self._ipt_hooks.append(key)
+        return chain
 
-    def _ip6t_add(self, *args: str) -> None:
-        r = subprocess.run(["ip6tables"] + list(args),
-                           capture_output=True, text=True)
+    def _ipt_run(self, binary: str, args: tuple[str, ...]) -> subprocess.CompletedProcess:
+        """Run an ``-A <BUILTIN> …`` rule, retargeted at our own chain."""
+        argv = list(args)
+        table = "filter"
+        if "-t" in argv:
+            table = argv[argv.index("-t") + 1]
+        i = argv.index("-A")
+        argv[i + 1] = self._ipt_hook(binary, table, argv[i + 1])
+        return subprocess.run([binary] + argv, capture_output=True, text=True)
+
+    def _ipt_add(self, *args: str) -> None:
+        r = self._ipt_run("iptables", args)
         if r.returncode != 0:
-            return  # ip6tables may not be available; non-fatal
-        if "-A" in args:
-            self._ip6t_rules.append(list(args))
+            raise RuntimeError(
+                f"iptables {' '.join(args)}: {r.stderr.strip()}")
+
+    def _ip6t_add(self, *args: str, required: bool = False) -> None:
+        """Add an ip6tables rule.
+
+        Optional rules may fail silently.  *required* ones are the IPv6 kill
+        switch: if IPv6 is up and they cannot be loaded, real IPv6 traffic
+        would bypass Tor entirely, so connect() must fail instead.
+        """
+        try:
+            r = self._ipt_run("ip6tables", args)
+            ok = r.returncode == 0
+            err = r.stderr.strip()
+        except (RuntimeError, OSError) as exc:
+            ok, err = False, str(exc)
+        if not ok and required and ipv6_enabled():
+            raise RuntimeError(
+                "IPv6 is enabled but ip6tables rules could not be loaded "
+                f"({err or 'ip6tables missing'}) — refusing to connect with "
+                "an IPv6 leak. Install ip6tables or disable IPv6.")
+
+    def _ipt_vpn(self, table: str, verdict: str) -> None:
+        """Exempt the VPN transport (see detect_vpn) in *table*."""
+        for mark, mask in self._vpn.marks:
+            m = f"0x{mark:x}" + (f"/0x{mask:x}" if mask is not None else "")
+            self._ipt_add("-t", table, "-A", "OUTPUT", "-m", "mark", "--mark", m,
+                          "-j", verdict)
+            if table == "filter":
+                self._ip6t_add("-A", "OUTPUT", "-m", "mark", "--mark", m,
+                               "-j", verdict)
+        for net in self._vpn.v4:
+            self._ipt_add("-t", table, "-A", "OUTPUT", "-d", net, "-j", verdict)
+        if table == "filter":
+            for net in self._vpn.v6:
+                self._ip6t_add("-A", "OUTPUT", "-d", net, "-j", verdict)
 
     def _apply_ipt(self, use_tor: bool, use_dnscrypt: bool,
                    tor_trans: int, tor_dns: int, dns_port: int,
@@ -539,12 +898,15 @@ class FirewallManager:
         tor_dns   = _nft_port(tor_dns,   5300)
         dns_port  = _nft_port(dns_port,  5380)
         i2p_only = use_i2p and not use_tor and not use_dnscrypt
+        # Start from a clean slate, like _apply_nft() deleting its tables.
+        purge_iptables_chains()
 
         if use_tor:
             uid = _tor_uid()
             if uid:
                 self._ipt_add("-t", "nat", "-A", "OUTPUT",
                                "-m", "owner", "--uid-owner", uid, "-j", "RETURN")
+            self._ipt_vpn("nat", "RETURN")
             # Per-app routing: bypass UIDs skip TransPort (direct internet).
             bypass_uids, block_uids = _per_app_rules()
             for b_uid in bypass_uids:
@@ -572,6 +934,7 @@ class FirewallManager:
             if uid:
                 self._ipt_add("-t", "filter", "-A", "OUTPUT",
                                "-m", "owner", "--uid-owner", uid, "-j", "ACCEPT")
+            self._ipt_vpn("filter", "ACCEPT")
             # Per-app: bypass UIDs allowed all protocols (direct internet).
             # Block UIDs fully isolated before local-net accepts.
             for b_uid in bypass_uids:
@@ -580,6 +943,12 @@ class FirewallManager:
             for b_uid in block_uids:
                 self._ipt_add("-t", "filter", "-A", "OUTPUT",
                                "-m", "owner", "--uid-owner", b_uid, "-j", "DROP")
+            # Same invalid-state leak guard and loopback accept as the
+            # nftables ruleset.  Without -o lo the replies of TransPort to a
+            # non-RFC1918 host address hit the catch-all DROP below.
+            self._ipt_add("-t", "filter", "-A", "OUTPUT",
+                           "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
+            self._ipt_add("-t", "filter", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT")
             for net in _TOR_LOCAL_NETS:
                 self._ipt_add("-t", "filter", "-A", "OUTPUT", "-d", net, "-j", "ACCEPT")
             self._ipt_add("-t", "filter", "-A", "OUTPUT",
@@ -592,13 +961,10 @@ class FirewallManager:
             self._ipt_add("-t", "filter", "-A", "OUTPUT", "-j", "DROP")
 
             # Block IPv6 leaks: Tor's TransPort is IPv4-only.
-            self._ip6t_add("-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT")
-            self._ip6t_add("-A", "OUTPUT", "-d", "fe80::/10", "-j", "ACCEPT")
-            self._ip6t_add("-A", "OUTPUT", "-j", "DROP")
+            self._ip6t_block()
 
             # Block forwarded packets (prevents clearnet bypass via IP forwarding).
             self._ipt_add("-t", "filter", "-A", "FORWARD", "-j", "DROP")
-            self._ip6t_add("-A", "FORWARD", "-j", "DROP")
 
         elif use_dnscrypt:
             self._ipt_add("-t", "nat", "-A", "OUTPUT",
@@ -621,6 +987,10 @@ class FirewallManager:
                     self._ipt_add("-t", "filter", "-A", "OUTPUT",
                                    "-p", "tcp", "--dport", "443",
                                    "-d", doh_ip, "-j", "DROP")
+                # DNS-over-TLS / DNS-over-QUIC, as in the nftables ruleset.
+                for proto in ("tcp", "udp"):
+                    self._ipt_add("-t", "filter", "-A", "OUTPUT",
+                                   "-p", proto, "--dport", "853", "-j", "DROP")
 
         if i2p_only:
             i2pd_uid = _i2pd_uid()
@@ -630,6 +1000,7 @@ class FirewallManager:
                 if i2pd_uid:
                     self._ipt_add("-t", "nat", "-A", "OUTPUT",
                                    "-m", "owner", "--uid-owner", i2pd_uid, "-j", "RETURN")
+                self._ipt_vpn("nat", "RETURN")
                 for net in _LOCAL_NETS:
                     self._ipt_add("-t", "nat", "-A", "OUTPUT", "-d", net, "-j", "RETURN")
                 self._ipt_add("-t", "nat", "-A", "OUTPUT",
@@ -641,19 +1012,34 @@ class FirewallManager:
             if i2pd_uid:
                 self._ipt_add("-t", "filter", "-A", "OUTPUT",
                                "-m", "owner", "--uid-owner", i2pd_uid, "-j", "ACCEPT")
+            self._ipt_vpn("filter", "ACCEPT")
+            self._ipt_add("-t", "filter", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT")
             for net in _LOCAL_NETS:
                 self._ipt_add("-t", "filter", "-A", "OUTPUT", "-d", net, "-j", "ACCEPT")
             self._ipt_add("-t", "filter", "-A", "OUTPUT",
                            "-p", "udp", "--dport", "53", "-j", "DROP")
             self._ipt_add("-t", "filter", "-A", "OUTPUT",
                            "-p", "tcp", "--dport", "53", "-j", "DROP")
+            self._ipt_add("-t", "filter", "-A", "OUTPUT",
+                           "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
             self._ipt_add("-t", "filter", "-A", "OUTPUT", "-p", "udp",  "-j", "DROP")
             self._ipt_add("-t", "filter", "-A", "OUTPUT", "-p", "icmp", "-j", "DROP")
             self._ipt_add("-t", "filter", "-A", "OUTPUT", "-j", "DROP")  # catch-all
 
+            # IPv6 was left wide open here, unlike the nftables backend.
+            self._ip6t_block()
+
             # Block forwarded packets for I2P-only mode too.
             self._ipt_add("-t", "filter", "-A", "FORWARD", "-j", "DROP")
-            self._ip6t_add("-A", "FORWARD", "-j", "DROP")
+
+    def _ip6t_block(self) -> None:
+        """IPv6 kill switch for the iptables backend (mirrors the nft ip6 table)."""
+        if not ipv6_enabled():
+            return
+        self._ip6t_add("-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT", required=True)
+        self._ip6t_add("-A", "OUTPUT", "-d", "fe80::/10", "-j", "ACCEPT", required=True)
+        self._ip6t_add("-A", "OUTPUT", "-j", "DROP", required=True)
+        self._ip6t_add("-A", "FORWARD", "-j", "DROP", required=True)
 
     # ── system proxy (GNOME + KDE) ────────────────────────────
 
@@ -666,36 +1052,12 @@ class FirewallManager:
         self._set_kde_proxy(pw, enable)
 
     def _user_systemctl(self, pw: pwd.struct_passwd, *args: str) -> None:
-        """Run 'systemctl --user' as root by connecting to the user's D-Bus socket.
+        """Run 'systemctl --user' in the desktop user's session.
 
-        Tries two methods:
-        1. Direct D-Bus socket  (root → user session socket, no helper needed)
-        2. runuser fallback     (switches to user and runs systemctl --user)
+        Always as that user (runuser).  Talking to their session bus as root —
+        the old first attempt — meant a root process speaking D-Bus to a
+        socket the user fully controls, for no benefit.
         """
-        runtime_dir = f"/run/user/{pw.pw_uid}"
-        bus_sock = f"{runtime_dir}/bus"
-
-        # Method 1: root connects directly to the user's session D-Bus socket.
-        if os.path.exists(bus_sock):
-            env = {
-                "DBUS_SESSION_BUS_ADDRESS": f"unix:path={bus_sock}",
-                "XDG_RUNTIME_DIR":          runtime_dir,
-                "HOME":    pw.pw_dir,
-                "USER":    pw.pw_name,
-                "LOGNAME": pw.pw_name,
-                "PATH":    os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
-            }
-            try:
-                r = subprocess.run(
-                    ["systemctl", "--user"] + list(args),
-                    env=env, capture_output=True,
-                )
-                if r.returncode == 0:
-                    return
-            except Exception:
-                pass
-
-        # Method 2: runuser fallback
         self._user_run(pw, ["systemctl", "--user"] + list(args))
 
     def _user_run(self, pw: pwd.struct_passwd, cmd: list[str]) -> None:
@@ -827,14 +1189,16 @@ class FirewallManager:
         env_file = os.path.join(pw.pw_dir, ".config", "environment.d",
                                 "entropy-shield-proxy.conf")
         if not enable:
-            for var in ("ALL_PROXY", "all_proxy", "SOCKS_PROXY", "socks_proxy",
-                        "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
-                        "NO_PROXY", "no_proxy"):
-                self._user_systemctl(pw, "unset-environment", var)
-        try:
-            os.unlink(env_file)
-        except FileNotFoundError:
-            pass
+            self._user_systemctl(
+                pw, "unset-environment",
+                "ALL_PROXY", "all_proxy", "SOCKS_PROXY", "socks_proxy",
+                "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+                "NO_PROXY", "no_proxy")
+        # Removed AS THE USER: the path is inside their home, so they control
+        # every directory on it.  A root unlink() would follow a symlinked
+        # ~/.config/environment.d into any directory on the system.
+        if os.path.lexists(env_file):
+            self._user_run(pw, ["rm", "-f", "--", env_file])
 
     def _set_gnome_tor_proxy(self, pw: pwd.struct_passwd,
                              enable: bool, socks_url: str) -> None:

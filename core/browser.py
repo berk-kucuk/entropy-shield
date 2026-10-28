@@ -43,7 +43,15 @@ user_pref("network.proxy.no_proxies_on", "127.0.0.1,localhost,::1");
 user_pref("network.dns.disablePrefetch", true);
 user_pref("network.dns.disablePrefetchFromHTTPS", true);
 user_pref("network.prefetch-next", false);
+user_pref("network.predictor.enabled", false);
+user_pref("network.http.speculative-parallel-limit", 0);
+user_pref("network.proxy.failover_direct", false);
+user_pref("network.proxy.allow_bypass", false);
+user_pref("network.trr.mode", 5);
+user_pref("network.http.http3.enable", false);
 user_pref("media.peerconnection.enabled", false);
+user_pref("geo.enabled", false);
+user_pref("browser.send_pings", false);
 user_pref("browser.startup.homepage", "about:blank");
 """
 
@@ -61,7 +69,15 @@ user_pref("network.proxy.no_proxies_on", "127.0.0.1,localhost,::1");
 user_pref("network.dns.disablePrefetch", true);
 user_pref("network.dns.disablePrefetchFromHTTPS", true);
 user_pref("network.prefetch-next", false);
+user_pref("network.predictor.enabled", false);
+user_pref("network.http.speculative-parallel-limit", 0);
+user_pref("network.proxy.failover_direct", false);
+user_pref("network.proxy.allow_bypass", false);
+user_pref("network.trr.mode", 5);
+user_pref("network.http.http3.enable", false);
 user_pref("media.peerconnection.enabled", false);
+user_pref("geo.enabled", false);
+user_pref("browser.send_pings", false);
 user_pref("browser.startup.homepage", "http://127.0.0.1:{http_port}");
 """
 

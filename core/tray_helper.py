@@ -189,7 +189,10 @@ class TrayHelper(QObject):
             parts = cmd[7:].split("|", 2)
             title = parts[0] if parts else "Entropy Shield"
             body  = parts[1] if len(parts) > 1 else ""
-            ms    = int(parts[2]) if len(parts) > 2 else 3000
+            try:
+                ms = max(0, min(int(parts[2]), 60000)) if len(parts) > 2 else 3000
+            except ValueError:
+                ms = 3000
             self._tray.showMessage(
                 title, body, QSystemTrayIcon.MessageIcon.Information, ms,
             )

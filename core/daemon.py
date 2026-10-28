@@ -70,6 +70,9 @@ _ALLOWED_CONNECT_KEYS = (
     "use_tor", "use_dnscrypt", "use_i2p", "use_onion_server",
 )
 
+# Longest command line accepted from a client ("connect {...}" is ~100 bytes).
+_MAX_COMMAND_BYTES = 4096
+
 
 # ── startup self-heal (moved from the legacy privileged_runner) ───────────────
 
@@ -85,7 +88,7 @@ def _startup_heal(log) -> None:
     """
     import subprocess as _sp, os as _os, shutil as _shu
 
-    # ── 1. Remove leftover nftables tables ──────────────────────
+    # ── 1. Remove leftover firewall rules ───────────────────────
     for fam in ("ip", "ip6"):
         r = _sp.run(["nft", "list", "table", fam, "entropy-shield"],
                     capture_output=True)
@@ -93,6 +96,13 @@ def _startup_heal(log) -> None:
             log(f"[HEAL] Removing stale nftables {fam} table from previous session…")
             _sp.run(["nft", "delete", "table", fam, "entropy-shield"],
                     capture_output=True)
+    # The iptables fallback keeps its rules in chains of its own; they survive
+    # a crash just like the nft tables do.
+    try:
+        from core.firewall import purge_iptables_chains
+        purge_iptables_chains()
+    except Exception as exc:
+        log(f"[HEAL] iptables cleanup failed: {exc}")
 
     # ── 2. Restore dnscrypt config if backup exists ──────────────
     _BAK = ".entropy-shield.bak"
@@ -135,7 +145,11 @@ def _startup_heal(log) -> None:
                 _old_pid = int(_lf.read().strip())
             try:
                 with open(f"/proc/{_old_pid}/comm") as _cf:
-                    if "tor" in _cf.read().strip().lower():
+                    # Exact match: tor-data is owned by the 'tor' user, so the
+                    # pid in it is not trusted, and a substring test would let
+                    # it name any process whose name merely contains "tor"
+                    # (storaged, monitor, …) for root to kill.
+                    if _cf.read().strip() == "tor":
                         _os.kill(_old_pid, _sig.SIGTERM)
                         import time as _tm; _tm.sleep(0.5)
                         try:
@@ -222,6 +236,19 @@ def _peer_cred(conn: socket.socket) -> tuple[int, int, int]:
 # guard against future changes, but it also serialises the shutdown path.
 _session_lock = threading.Lock()
 
+# Set by SIGTERM/SIGINT.  An active session must be torn down before the daemon
+# exits: otherwise `systemctl stop` (an upgrade, an uninstall, shutdown) waited
+# out TimeoutStopSec, was SIGKILLed, and left the nftables kill switch, the
+# rewritten dnscrypt/i2pd configs and a stopped systemd-resolved behind.
+_stop = threading.Event()
+# True only while the session loop is blocked waiting for the next command —
+# the one point where the signal handler may safely interrupt it.
+_waiting_for_command = False
+
+
+class _Shutdown(Exception):
+    """Raised inside the session loop when the daemon is asked to stop."""
+
 
 def _handle_client(conn: socket.socket) -> None:
     """Serve a single GUI client for the lifetime of its connection.
@@ -232,18 +259,24 @@ def _handle_client(conn: socket.socket) -> None:
     """
     from core.connection import ConnectionManager
 
+    global _waiting_for_command
     rfile = conn.makefile("rb")
     wfile = conn.makefile("wb")
+    # _log is also called from Tor's stderr-reader thread; unsynchronised
+    # writes to the buffered socket file interleave bytes mid-line and corrupt
+    # the line protocol the GUI parses.
+    log_lock = threading.Lock()
 
     def _log(msg: str) -> None:
         # Send to the client and to the journal (stdout) simultaneously.
-        try:
-            wfile.write((msg + "\n").encode())
-            wfile.flush()
-        except (BrokenPipeError, ValueError, OSError):
-            pass
-        sys.stdout.write(msg + "\n")
-        sys.stdout.flush()
+        with log_lock:
+            try:
+                wfile.write((msg + "\n").encode())
+                wfile.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+            sys.stdout.write(msg + "\n")
+            sys.stdout.flush()
 
     # The daemon is long-lived and serves one client after another, so the
     # per-client identity must be rebound on EVERY connection — never left over
@@ -280,7 +313,17 @@ def _handle_client(conn: socket.socket) -> None:
             _log("[RUNNER] started")
 
             while True:
-                raw = rfile.readline()
+                if _stop.is_set():
+                    raise _Shutdown()
+                _waiting_for_command = True
+                try:
+                    if _stop.is_set():
+                        raise _Shutdown()
+                    # Cap the line: a client that never sends a newline must
+                    # not grow the root daemon's memory without bound.
+                    raw = rfile.readline(_MAX_COMMAND_BYTES)
+                finally:
+                    _waiting_for_command = False
                 if not raw:
                     # Client disconnected — always clean up whatever mgr touched,
                     # regardless of whether connect() fully succeeded.
@@ -384,6 +427,14 @@ def _handle_client(conn: socket.socket) -> None:
                 # ── unknown ───────────────────────────────────────────────────
                 else:
                     _log("[ERR] unknown command")
+    except _Shutdown:
+        _log("[ERR] Entropy Shield daemon is stopping — disconnecting.")
+        if mgr is not None:
+            try:
+                mgr.disconnect()
+            except Exception as exc:
+                _log(f"[ERR] {exc}")
+                _force_remove_firewall()
     finally:
         # Close the socket file objects now so their buffered writers are not
         # finalized later against an already-closed fd.  That finalization
@@ -405,17 +456,11 @@ def _force_remove_firewall() -> None:
                 capture_output=True)
         _sp.run(["nft", "delete", "table", "ip6", "entropy-shield"],
                 capture_output=True)
-        from core.platform import firewall_backend
-        # Flushing iptables wipes EVERY rule on the host — Docker/libvirt NAT,
-        # VPN kill switches, the user's own DROP rules — so it is a last resort
-        # for the one case that needs it: the iptables fallback backend, whose
-        # rules sit in the built-in chains with no table of their own to delete.
-        # With nftables in use (always, on Maze: it is a hard dependency) our
-        # rules live only in the tables removed above, and a "panic" must not
-        # take everyone else's protection down with it.
-        if firewall_backend() == "iptables":
-            _sp.run(["iptables", "-F"], capture_output=True)
-            _sp.run(["iptables", "-t", "nat", "-F"], capture_output=True)
+        # The iptables fallback keeps its rules in chains of its own, so this
+        # removes exactly those — never a host-wide `iptables -F`, which wiped
+        # Docker/libvirt NAT, VPN kill switches and the user's own rules.
+        from core.firewall import purge_iptables_chains
+        purge_iptables_chains()
     except Exception:
         pass
 
@@ -437,20 +482,22 @@ def main() -> None:
     srv = _setup_socket()
     _journal(f"[DAEMON] Listening on {SOCKET_PATH}")
 
-    stop = threading.Event()
-
     def _shutdown(*_a):
-        stop.set()
+        _stop.set()
         try:
             srv.close()  # unblock accept()
         except Exception:
             pass
+        # A session idle in readline() is interrupted right away so it can
+        # roll back; one busy with a command finishes it and then sees _stop.
+        if _waiting_for_command:
+            raise _Shutdown()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
 
     try:
-        while not stop.is_set():
+        while not _stop.is_set():
             try:
                 conn, _ = srv.accept()
             except OSError:

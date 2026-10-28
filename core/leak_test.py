@@ -1,5 +1,6 @@
 """Leak test suite — checks DNS leaks, IPv6 leaks, WebRTC, timezone."""
 from __future__ import annotations
+import errno
 import subprocess
 import socket
 import os
@@ -139,39 +140,33 @@ class LeakTester:
             return TestResult("IPv6 Leak", False, f"Error: {e}")
 
     def test_webrtc_udp(self) -> TestResult:
-        """Check if UDP is blocked (prevents WebRTC leaks)."""
-        # Try to send a UDP packet to a well-known external IP.
-        # If the firewall is active, this should fail or timeout.
+        """Check that UDP to the internet is blocked (prevents WebRTC/QUIC leaks).
+
+        The verdict comes from the kernel, not from waiting for a reply: an
+        nftables/iptables drop in the OUTPUT path makes sendto() fail with
+        EPERM.  The old version sent to 8.8.8.8:53 — a port the ruleset
+        deliberately redirects to the local resolver — and counted a missing
+        reply as "blocked", which is also exactly what happens with no
+        firewall at all.
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(2)
-            target = ("8.8.8.8", 53)
-            try:
-                s.sendto(b"\x00" * 16, target)
-                # If send succeeds immediately, the packet may have gone out
-                # (no kernel error). Check by trying to receive — DNS query
-                # format is invalid so we'd get ICMP port unreachable or timeout.
-                try:
-                    s.recv(64)
-                    # Got a response — UDP is NOT blocked
-                    s.close()
-                    return TestResult("WebRTC / UDP Block", False,
-                                      "UDP to external IP succeeded  ✗",
-                                      "WebRTC / QUIC leaks possible")
-                except (socket.timeout, ConnectionRefusedError):
-                    # Timeout or ICMP unreachable — packet likely blocked
-                    s.close()
-                    return TestResult("WebRTC / UDP Block", True,
-                                      "UDP to external IP timed out  ✓")
-            except OSError as ex:
-                s.close()
-                if "blocked" in str(ex).lower() or ex.errno in (1, 13, 101, 111):
-                    return TestResult("WebRTC / UDP Block", True,
-                                      f"UDP blocked by firewall  ✓ ({ex.strerror})")
+            # STUN port (what WebRTC uses), TEST-NET-3 documentation address:
+            # nothing listens there, so a packet that does get out reaches no one.
+            s.sendto(b"\x00" * 20, ("203.0.113.1", 3478))
+            return TestResult("WebRTC / UDP Block", False,
+                              "UDP to an external address left the machine  ✗",
+                              "WebRTC / QUIC leaks possible")
+        except OSError as ex:
+            if ex.errno in (errno.EPERM, errno.EACCES):
                 return TestResult("WebRTC / UDP Block", True,
-                                  f"UDP send failed  ✓ ({ex.strerror})")
-        except Exception as e:
-            return TestResult("WebRTC / UDP Block", False, f"Error: {e}")
+                                  "UDP blocked by firewall  ✓")
+            if ex.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+                return TestResult("WebRTC / UDP Block", True,
+                                  f"No route for UDP  ✓ ({ex.strerror})")
+            return TestResult("WebRTC / UDP Block", False, f"Error: {ex}")
+        finally:
+            s.close()
 
     def test_timezone(self) -> TestResult:
         """Check if system timezone leaks location (should be UTC)."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import shutil
 import subprocess
+import threading
 from typing import Callable
 from .tor          import TorManager, TORRC
 from .config       import cfg, cfg_port
@@ -30,6 +31,32 @@ class ConnectionManager:
         self._fw    = FirewallManager(log)
         self._mac   = MacRandomizer(log)
         self._layers: dict[str, bool] = {}
+        self._watchdog_stop: threading.Event | None = None
+
+    # ── firewall watchdog ─────────────────────────────────────────────────────
+
+    def _start_watchdog(self) -> None:
+        """Keep the kill switch loaded for the whole session.
+
+        Another firewall manager (ufw/firewalld reload, iptables -F, nft flush
+        ruleset, a VPN client resetting rules) can silently remove ours; the
+        GUI would still say PROTECTED.  Check every few seconds and re-apply.
+        """
+        stop = threading.Event()
+        self._watchdog_stop = stop
+
+        def _run() -> None:
+            while not stop.wait(5):
+                try:
+                    self._fw.reapply_if_missing()
+                except Exception as exc:
+                    self._log(f"[FW] Watchdog could not re-apply rules: {exc}")
+        threading.Thread(target=_run, name="fw-watchdog", daemon=True).start()
+
+    def _stop_watchdog(self) -> None:
+        if self._watchdog_stop is not None:
+            self._watchdog_stop.set()
+            self._watchdog_stop = None
 
     def connect(self, use_tor: bool, use_dnscrypt: bool, use_i2p: bool,
                 use_onion_server: bool = False) -> None:
@@ -170,6 +197,7 @@ class ConnectionManager:
                 "i2pd tunnels out via Tor SOCKS (NTCP2, SSU2 disabled)."
             )
 
+        self._start_watchdog()
         self._log("[OK] All selected layers are active.")
 
     def _rollback(self, use_tor: bool, use_dnscrypt: bool,
@@ -180,6 +208,7 @@ class ConnectionManager:
         subsystem that was touched, even if it never reached STARTED state
         (e.g. dnscrypt config was modified but service never launched).
         """
+        self._stop_watchdog()
         # Restore DNS routing first so resolver is healthy when rules drop.
         # IMPORTANT: _restore_dns() checks self._layers which is empty when
         # a service fails during startup (PHASE 4 — before _layers is
@@ -235,6 +264,7 @@ class ConnectionManager:
                 pass
 
     def disconnect(self) -> None:
+        self._stop_watchdog()
         # ── PHASE 1: restore DNS routing ──────────────────────────────────
         # For Tor-only: resolvectl revert + drop-in removal (resolved running).
         try:

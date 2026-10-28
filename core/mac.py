@@ -6,8 +6,8 @@ will negotiate a new lease when it comes back up, which further
 reduces local-network traceability.
 """
 from __future__ import annotations
-import random
 import re
+import secrets
 import subprocess
 from typing import Callable
 
@@ -41,7 +41,9 @@ def _get_mac(iface: str) -> str | None:
 
 
 def _random_mac() -> str:
-    b = [random.randint(0, 255) for _ in range(6)]
+    # secrets, not random: Mersenne Twister output is predictable from earlier
+    # outputs, and a guessable "random" MAC defeats the point.
+    b = list(secrets.token_bytes(6))
     b[0] = (b[0] & 0xFE) | 0x02  # unicast + locally administered
     return ":".join(f"{x:02x}" for x in b)
 

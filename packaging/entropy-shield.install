@@ -22,7 +22,10 @@ _real_user() {
         echo "$SUDO_USER"
         return
     fi
-    logname 2>/dev/null || true
+    # logname reports "root" for a root login shell — never add root itself.
+    name="$(logname 2>/dev/null || true)"
+    [ "$name" != "root" ] && echo "$name"
+    return 0
 }
 
 # Actually add the user to the group instead of just printing instructions —

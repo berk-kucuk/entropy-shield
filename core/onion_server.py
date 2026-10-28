@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import sys
 import pwd
+import stat
 import time
 import subprocess
 import threading
@@ -45,8 +46,16 @@ def _public_share_dir(home: str) -> str:
     writes and may localise, e.g. "$HOME/Genel"); falls back to ~/Public.
     """
     try:
-        with open(os.path.join(home, ".config", "user-dirs.dirs")) as f:
-            for line in f:
+        # Read by root from a path the user controls: never follow a symlink
+        # planted there, and only trust a file that is actually theirs.
+        fd = os.open(os.path.join(home, ".config", "user-dirs.dirs"),
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
+            st = os.fstat(f.fileno())
+            uid = _invoking_uid()
+            if not stat.S_ISREG(st.st_mode) or (uid is not None and st.st_uid != uid):
+                raise OSError("untrusted user-dirs.dirs")
+            for line in f.read(64 * 1024).splitlines():
                 line = line.strip()
                 if line.startswith("XDG_PUBLICSHARE_DIR="):
                     val = line.split("=", 1)[1].strip().strip('"')
@@ -56,6 +65,15 @@ def _public_share_dir(home: str) -> str:
     except OSError:
         pass
     return os.path.join(home, "Public")
+
+
+def _drain(pipe) -> None:
+    """Read and discard a child's pipe until EOF so the child never blocks."""
+    try:
+        while pipe.read(65536):
+            pass
+    except (OSError, ValueError):
+        pass
 
 
 class OnionServerManager:
@@ -203,6 +221,12 @@ class OnionServerManager:
                 f"Onion HTTP server failed to bind 127.0.0.1:{local_port}"
                 + (f" — {err.splitlines()[-1]}" if err else "")
                 + (". Use a port ≥ 1024." if local_port < 1024 else ""))
+
+        # http.server logs every request to stderr.  Nothing read that pipe
+        # after startup, so once ~64 KB of log lines had piled up the server
+        # blocked on write() and the hidden service silently stopped serving.
+        threading.Thread(target=_drain, args=(self._proc.stderr,),
+                         daemon=True).start()
 
         who = f"as uid {uid}" if dropped else "as current user"
         self._log(

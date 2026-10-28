@@ -240,9 +240,6 @@ class _Worker(QThread):
                 # Runner stays alive; GUI will show error and leave runner running
                 # so a future disconnect can clean up properly.
                 raise RuntimeError(line)
-            if proc.poll() is not None:
-                raise RuntimeError(
-                    "Privileged process terminated unexpectedly during connection.")
 
     # ── disconnect ────────────────────────────────────────────
 
@@ -250,22 +247,25 @@ class _Worker(QThread):
         proc = self._runner
         if proc is None or proc.poll() is not None:
             return
-        try:
-            proc.stdin.write(b"disconnect\n")
-            proc.stdin.flush()
-        except BrokenPipeError:
-            return
-        while True:
-            raw = proc.stdout.readline()
-            if not raw:
-                break
-            line = raw.decode(errors="replace").rstrip()
-            if line:
-                self.log.emit(line)
-            if "[OK] All layers disconnected." in line:
-                break
-            if proc.poll() is not None:
-                break
+        with proc.lock:
+            try:
+                proc.stdin.write(b"disconnect\n")
+                proc.stdin.flush()
+            except OSError:
+                proc.close()
+                return
+            while True:
+                try:
+                    raw = proc.stdout.readline()
+                except OSError:
+                    break
+                if not raw:
+                    break
+                line = raw.decode(errors="replace").rstrip()
+                if line:
+                    self.log.emit(line)
+                if "[OK] All layers disconnected." in line:
+                    break
         # Closing the socket ends the daemon-side session and is itself a safe
         # disconnect (the daemon rolls back on EOF).
         proc.close()
@@ -287,19 +287,24 @@ class _PanicWorker(QThread):
 
         if self._runner and self._runner.poll() is None:
             try:
-                self._runner.stdin.write(b"panic\n")
-                self._runner.stdin.flush()
-                while True:
-                    raw = self._runner.stdout.readline()
-                    if not raw:
-                        break
-                    line = raw.decode(errors="replace").rstrip()
-                    if line:
-                        msgs.append(line)
-                    if "[PANIC] Connection closed." in line:
-                        break
-                    if self._runner.poll() is not None:
-                        break
+                # Wait for an in-flight circuit query rather than racing it —
+                # but never forever: panic must not hang on a stuck worker.
+                got = self._runner.lock.acquire(timeout=10)
+                try:
+                    self._runner.stdin.write(b"panic\n")
+                    self._runner.stdin.flush()
+                    while True:
+                        raw = self._runner.stdout.readline()
+                        if not raw:
+                            break
+                        line = raw.decode(errors="replace").rstrip()
+                        if line:
+                            msgs.append(line)
+                        if "[PANIC] Connection closed." in line:
+                            break
+                finally:
+                    if got:
+                        self._runner.lock.release()
             except Exception as exc:
                 msgs.append(f"[PANIC] Error: {exc}")
             finally:
@@ -411,17 +416,30 @@ class _CircuitInfoWorker(QThread):
             if self._runner.poll() is not None:
                 self.result.emit({})
                 return
-            self._runner.stdin.write(b"circuit_info\n")
-            self._runner.stdin.flush()
-            raw = self._runner.stdout.readline()
-            if raw:
-                line = raw.decode(errors="replace").rstrip()
-                if line.startswith("[CIRCUIT] "):
-                    try:
-                        self.result.emit(_json.loads(line[10:]))
-                        return
-                    except Exception:
-                        pass
+            # Non-blocking: if another exchange (disconnect, panic, new
+            # circuit) holds the socket, skip this refresh tick.
+            if not self._runner.lock.acquire(blocking=False):
+                self.result.emit({})
+                return
+            try:
+                self._runner.stdin.write(b"circuit_info\n")
+                self._runner.stdin.flush()
+                # The daemon may push unsolicited log lines (e.g. a Tor
+                # warning) at any time; skip them instead of taking one as the
+                # reply and leaving the real reply for the next command.
+                for _ in range(50):
+                    raw = self._runner.stdout.readline()
+                    if not raw:
+                        break
+                    line = raw.decode(errors="replace").rstrip()
+                    if line.startswith("[CIRCUIT] "):
+                        try:
+                            self.result.emit(_json.loads(line[10:]))
+                            return
+                        except Exception:
+                            break
+            finally:
+                self._runner.lock.release()
         except Exception:
             pass
         self.result.emit({})
@@ -462,10 +480,14 @@ class _LeakTestWorker(QThread):
 class _UpdateCheckWorker(QThread):
     result = pyqtSignal(bool, str)
 
+    def __init__(self, socks_port: int):
+        super().__init__()
+        self._socks = socks_port
+
     def run(self) -> None:
         from core.updater import check_for_update
         try:
-            available, latest = check_for_update()
+            available, latest = check_for_update(self._socks)
             self.result.emit(available, latest)
         except Exception:
             self.result.emit(False, "")
@@ -484,13 +506,20 @@ class _NewCircuitWorker(QThread):
         try:
             if self._runner is None or self._runner.poll() is not None:
                 raise RuntimeError("Privileged process is not running.")
-            self._runner.stdin.write(b"new_circuit\n")
-            self._runner.stdin.flush()
-            raw = self._runner.stdout.readline()
-            self.result.emit(
-                raw.decode(errors="replace").rstrip() if raw
-                else "[TOR] No response from circuit."
-            )
+            with self._runner.lock:
+                self._runner.stdin.write(b"new_circuit\n")
+                self._runner.stdin.flush()
+                # Skip unsolicited log lines; the reply is one of these two.
+                for _ in range(50):
+                    raw = self._runner.stdout.readline()
+                    if not raw:
+                        break
+                    line = raw.decode(errors="replace").rstrip()
+                    if (line.startswith("[TOR] New Tor circuit requested")
+                            or line.startswith("[ERR]")):
+                        self.result.emit(line)
+                        return
+            self.result.emit("[TOR] No response from circuit.")
         except Exception as e:
             self.result.emit(f"[TOR] Circuit renewal failed: {e}")
 
@@ -1030,8 +1059,11 @@ class MainWindow(QMainWindow):
         # not active yet.  Deferred so the window paints first.
         QTimer.singleShot(600, self._check_daemon_ready)
 
-        # Kick off update check after a short delay so UI is fully ready
-        QTimer.singleShot(3000, self._run_update_check)
+        # The update check runs once per app session, through Tor, right after
+        # the first successful Tor connect (see _on_worker_done) — never at
+        # startup over the clearnet, where it told GitHub and anyone on the
+        # path that this IP runs Entropy Shield.
+        self._update_checked = False
 
         if cfg().get("autostart"):
             if autostart.enable():
@@ -1472,6 +1504,9 @@ class MainWindow(QMainWindow):
             self._notify("Connected", layers_label)
             self._connect_time    = datetime.datetime.now()
             self._reconnect_attempts = 0
+            if tor_on and not self._update_checked:
+                self._update_checked = True
+                QTimer.singleShot(5000, self._run_update_check)
             self._exit_country    = ""
             self._circuit_count   = 0
             if cfg().get("kill_switch"):
@@ -1822,7 +1857,9 @@ class MainWindow(QMainWindow):
     def _run_update_check(self) -> None:
         if not cfg().get("update_check"):
             return
-        self._update_worker = _UpdateCheckWorker()
+        if not (self._connected and "tor" in self._active_layers):
+            return
+        self._update_worker = _UpdateCheckWorker(cfg_port("tor", "socks_port"))
         self._update_worker.result.connect(self._on_update_result)
         self._update_worker.start()
 
@@ -1867,7 +1904,11 @@ class MainWindow(QMainWindow):
         ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         path = Path.home() / f"entropy-shield-log-{ts}.txt"
         try:
-            path.write_text(self._log_widget.toPlainText())
+            # The log holds the .onion address, exit country and timing —
+            # owner-only, not the umask's usual world-readable 0644.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(self._log_widget.toPlainText())
             self._append_log(f"[>] Log exported → {path}")
         except Exception as e:
             self._append_log(f"[!] Export failed: {e}")
@@ -1940,6 +1981,23 @@ class MainWindow(QMainWindow):
             self._append_log(f"[!] Tray launch failed: {exc}")
             return
 
+        # The helper logs to stderr on every tray click, and Qt adds its own
+        # warnings.  Read the pipe continuously (keeping the tail for the
+        # diagnostics below) — left unread it fills up after ~64 KB and the
+        # helper blocks on write(), freezing the tray icon.
+        import collections, threading
+        self._tray_err_tail: "collections.deque[str]" = collections.deque(maxlen=40)
+
+        def _drain_tray_stderr(pipe, tail) -> None:
+            try:
+                for raw in pipe:
+                    tail.append(raw.decode(errors="replace").rstrip())
+            except (OSError, ValueError):
+                pass
+        threading.Thread(target=_drain_tray_stderr,
+                         args=(self._tray_proc.stderr, self._tray_err_tail),
+                         daemon=True).start()
+
         self._tray_username = os.environ.get("USER", "")
         self._tray_poll = QTimer(self)
         self._tray_poll.timeout.connect(self._poll_tray)
@@ -1950,7 +2008,7 @@ class MainWindow(QMainWindow):
         if not self._tray_proc:
             return
         if self._tray_proc.poll() is not None:
-            err = self._tray_proc.stderr.read().decode(errors="replace").strip()
+            err = "\n".join(self._tray_err_tail).strip()
             self._append_log(f"[!] Tray exited early: {err or '(no output)'}")
             self._tray_proc = None
             self._tray_poll.stop()
@@ -1983,12 +2041,9 @@ class MainWindow(QMainWindow):
             return
 
         if self._tray_proc.poll() is not None:
-            try:
-                err = self._tray_proc.stderr.read().decode(errors="replace").strip()
-                if err:
-                    self._append_log(f"[!] Tray: {err}")
-            except Exception:
-                pass
+            err = "\n".join(self._tray_err_tail).strip()
+            if err:
+                self._append_log(f"[!] Tray: {err}")
             self._tray_proc = None
             self._tray_poll.stop()
             if self._quitting:

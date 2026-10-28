@@ -77,6 +77,11 @@ _DEFAULTS: dict = {
         "enabled":    False,
         "rules":      [],  # [{name, uid_or_user, action}]  action: tor|direct|block
     },
+    # Tunnel transport the kill switch must spare (see core.firewall.detect_vpn).
+    "vpn": {
+        "auto_detect": True,   # WireGuard endpoints/fwmark, host routes, Tailscale
+        "allow":       [],     # extra VPN server addresses / CIDRs, e.g. "203.0.113.7"
+    },
     "auto_reconnect": {
         "enabled":         True,
         "delay_seconds":   15,
@@ -210,6 +215,30 @@ def _routing_rules(v):
     return out
 
 
+def _ip_list(v):
+    """VPN server addresses/networks the firewall must let through.
+
+    Each entry ends up in an nftables/iptables rule, so only what
+    :mod:`ipaddress` accepts as an address or network survives.
+    """
+    import ipaddress
+    if not isinstance(v, list):
+        raise _Invalid("vpn.allow must be a list")
+    out: list[str] = []
+    for item in v[:64]:
+        if not isinstance(item, str):
+            continue
+        try:
+            net = ipaddress.ip_network(item.strip(), strict=False)
+        except ValueError:
+            continue
+        # Never let a config entry exempt "everything" (0.0.0.0/0, ::/0, /1 …).
+        if net.prefixlen < (8 if net.version == 4 else 16):
+            continue
+        out.append(str(net))
+    return out
+
+
 def _clean_line(s: str) -> str:
     """Collapse control characters so a value can never span two config lines."""
     return "".join(" " if (ord(c) < 0x20 or ord(c) == 0x7F) else c for c in s)
@@ -256,6 +285,7 @@ _VALIDATORS = {
     ("onion_server", "hs_port"):         _port,
     ("onion_server", "serve_dir"):       _serve_dir,
     ("per_app_routing", "rules"):        _routing_rules,
+    ("vpn", "allow"):                    _ip_list,
     ("auto_reconnect", "delay_seconds"): _int_range(1, 3600),
     ("auto_reconnect", "max_attempts"):  _int_range(0, 100),
     ("circuit_renewal_minutes",):        _int_range(0, 10080),

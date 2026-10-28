@@ -19,7 +19,10 @@ RuntimeDirectoryMode=0751
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=entropy-shield
-TimeoutStopSec=30
+# On SIGTERM the daemon rolls back an active session (firewall, DNS, configs)
+# before exiting; if it is mid-connect it first lets that finish (Tor bootstrap
+# can take up to ~2 min), so give it time instead of SIGKILLing it halfway.
+TimeoutStopSec=180
 # Sandbox (2026-09). Kept: nft/iptables/ip over netlink and raw sockets, tor,
 # resolvectl and systemctl over D-Bus, writes to /etc (dnscrypt, i2pd,
 # profile.d), /run and /var/lib/tor, and `runuser`/`su` to serve the onion
@@ -35,6 +38,7 @@ ProtectClock=true
 ProtectHostname=true
 ProtectKernelLogs=true
 ProtectKernelModules=true
+ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictRealtime=true
 RestrictSUIDSGID=true

@@ -3,6 +3,7 @@ import re
 import subprocess
 import shutil
 import os
+import threading
 import time
 from typing import Callable
 
@@ -198,6 +199,11 @@ class I2PManager:
             self._redsocks_proc = None
             raise RuntimeError(f"redsocks failed to start: {err or '(no output)'}")
 
+        # Keep the pipe drained so redsocks can never block on a full stderr.
+        from .onion_server import _drain
+        threading.Thread(target=_drain, args=(self._redsocks_proc.stderr,),
+                         daemon=True).start()
+
         self._transparent = True
         self._log(
             f"[I2P] redsocks transparent proxy active "
@@ -212,6 +218,7 @@ class I2PManager:
                     self._redsocks_proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._redsocks_proc.kill()
+                    self._redsocks_proc.wait()  # reap — no zombie
             self._redsocks_proc = None
         self._transparent = False
         try:

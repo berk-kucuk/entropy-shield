@@ -21,6 +21,7 @@ state when the socket closes, so closing the client is a safe disconnect.
 """
 from __future__ import annotations
 import socket
+import threading
 
 # Must match core/daemon.py
 SOCKET_PATH = "/run/entropy-shield/daemon.sock"
@@ -38,6 +39,11 @@ class DaemonClient:
         self.stdin  = sock.makefile("wb")
         self.stdout = sock.makefile("rb")
         self._closed = False
+        # One request/response exchange at a time.  The GUI talks to the
+        # daemon from several worker threads (circuit info, new circuit,
+        # disconnect, panic); without this two of them could interleave
+        # their reads and each consume the other's reply.
+        self.lock = threading.Lock()
 
     # ── construction ──────────────────────────────────────────────────────────
     @classmethod
@@ -69,8 +75,23 @@ class DaemonClient:
 
     # ── Popen-compatible API ──────────────────────────────────────────────────
     def poll(self):
-        """Return None while the connection is open, 0 once it has been closed."""
-        return 0 if self._closed else None
+        """Return None while the connection is open, 0 once it has been closed.
+
+        "Closed" includes the daemon side going away (crash, restart): a
+        zero-byte non-consuming peek means the peer sent EOF.  Previously only
+        our own close() counted, so a dead daemon looked alive forever and the
+        GUI's kill-switch path for it could never trigger.
+        """
+        if self._closed:
+            return 0
+        try:
+            if self._sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b"":
+                return 0
+        except (BlockingIOError, InterruptedError):
+            pass          # open, nothing pending
+        except OSError:
+            return 0      # reset / bad fd
+        return None
 
     def wait(self, timeout=None):  # noqa: ARG002 - signature parity with Popen
         """No child process to reap; present only for API symmetry."""

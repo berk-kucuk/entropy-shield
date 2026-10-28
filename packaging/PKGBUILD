@@ -1,6 +1,6 @@
 # Maintainer: Berk Kucuk <berkkucukk@proton.me>
 pkgname=entropy-shield
-pkgver=4.1.6
+pkgver=4.1.7
 pkgrel=1
 pkgdesc="Modern Linux desktop privacy stack — Tor, DNSCrypt, I2P, Onion Server — for Maze Linux"
 arch=('any')
@@ -37,8 +37,16 @@ package() {
 
     # Application files
     install -dm755 "$pkgdir/opt/entropy-shield"
-    cp -r core gui logos Fonts main.py "$pkgdir/opt/entropy-shield/"
-    chmod 755 "$pkgdir/opt/entropy-shield/main.py"
+    cp -RL --no-preserve=ownership core gui logos Fonts main.py \
+        "$pkgdir/opt/entropy-shield/"
+    # The root daemon imports this tree: normalise modes so a developer's
+    # umask (002 → group-writable) or a stray symlink never ends up in it.
+    find "$pkgdir/opt/entropy-shield" -type l -delete
+    find "$pkgdir/opt/entropy-shield" -type d -name __pycache__ -prune -exec rm -rf {} +
+    find "$pkgdir/opt/entropy-shield" -type d -exec chmod 755 {} +
+    find "$pkgdir/opt/entropy-shield" -type f -exec chmod 644 {} +
+    chmod 755 "$pkgdir/opt/entropy-shield/main.py" \
+              "$pkgdir/opt/entropy-shield/core/daemon.py"
 
     # Launcher — runs as the normal user; privileged operations go through the
     # root entropy-shield daemon over its group-restricted socket.

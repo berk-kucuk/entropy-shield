@@ -285,9 +285,15 @@ class TorManager:
             # config cannot inject extra torrc directives (e.g. an exec plugin).
             bl = _torrc_safe(bl).strip()
             if bl and not bl.startswith("#"):
-                if not bl.lower().startswith("bridge"):
-                    bl = "Bridge " + bl
-                lines.append(bl)
+                # Only the "Bridge" directive itself may be written here. The
+                # old startswith("bridge") test also passed BridgeRelay 1,
+                # BridgeDistribution, … — turning the user's client into a
+                # public bridge relay that publishes their real address.
+                first, _, rest = bl.partition(" ")
+                if first.lower() == "bridge":
+                    bl = rest.strip()
+                if bl:
+                    lines.append("Bridge " + bl)
 
         if not lines_raw:
             self._log(
@@ -526,8 +532,10 @@ class TorManager:
                 old_pid = int(f.read().strip())
             try:
                 with open(f"/proc/{old_pid}/comm") as f:
-                    comm = f.read().strip().lower()
-                if "tor" in comm:
+                    comm = f.read().strip()
+                # Exact match — the lock file lives in the 'tor' user's data
+                # directory, so its pid is untrusted input for a root kill().
+                if comm == "tor":
                     self._log(f"[TOR] Killing orphaned Tor process (PID {old_pid})…")
                     try:
                         os.kill(old_pid, _signal.SIGTERM)
@@ -657,7 +665,7 @@ class TorManager:
                 capture_output=True, text=True, timeout=3,
             )
             for line in r.stdout.splitlines():
-                if "tor" not in line.lower():
+                if 'users:(("tor",' not in line:
                     continue
                 m = _re.search(r"pid=(\d+)", line)
                 if not m:

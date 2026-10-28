@@ -402,11 +402,36 @@ Settings are stored at `~/.config/entropy-shield/config.json` and editable via t
     "local_port": 8080,
     "hs_port": 80,
     "serve_dir": ""
+  },
+  "vpn": {
+    "auto_detect": true,
+    "allow": []
   }
 }
 ```
 
 </details>
+
+### Using a VPN at the same time
+
+The kill switch drops everything that is not routed through the active privacy
+layers — which would include a VPN's own tunnel packets. Entropy Shield
+therefore detects active VPNs on connect and exempts only their **transport**
+(the traffic to the VPN server); everything inside the tunnel still goes
+through Tor/I2P ("Tor over VPN"):
+
+- **WireGuard** (wg-quick, NetworkManager, Mullvad, Proton, …): peer endpoints and the tunnel's fwmark (needs the `wg` tool)
+- **OpenVPN / NetworkManager VPNs / IPsec**: the host route the client pins to its server
+- **Tailscale**: its packet mark
+
+If your VPN is not detected (the log says so), add its server address(es) to
+`"vpn": {"allow": ["203.0.113.7"]}`. Set `"auto_detect": false` to exempt only
+what you list.
+
+Both nftables and iptables (nft or legacy) are supported: nftables is used when
+the kernel supports it, otherwise the iptables fallback. While connected, the
+rules are checked every few seconds and re-applied if another tool (ufw,
+firewalld, `iptables -F`, `nft flush ruleset`) removed them.
 
 ### Tor Exit Nodes
 
