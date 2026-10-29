@@ -7,25 +7,30 @@ import random as _random
 import select
 import subprocess
 import datetime
+import html
+import re
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFrame,
     QPushButton, QLabel, QTextEdit, QSizePolicy,
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QPoint, QPointF, QRectF,
 )
 from PyQt6.QtGui import (
-    QTextCursor, QPainter, QColor, QPen, QIcon, QPixmap,
-    QPainterPath, QRadialGradient,
+    QTextCursor, QPainter, QColor, QPen, QIcon, QPixmap, QImage, QFont,
+    QPainterPath, QRadialGradient, QLinearGradient, QGuiApplication,
 )
 
 import gui.themes as themes
+from gui import icons
 from gui.themes import current as theme, build_qss
-from gui.widgets import ServiceCard, Spinner, StatusRing, NetSpeedGraph
+from gui.widgets import (
+    GlassPanel, LayerRow, Spinner, StatusRing, NetSpeedGraph, set_backdrop,
+)
 from gui.settings_panel import SettingsPanel
 from core.config import cfg, cfg_port
 from core.updater import VERSION
@@ -147,10 +152,10 @@ _CPU_TRACES = [
 
 
 _GLOW_FALLBACK = {
-    "off":        (210, 55,  48),
-    "connecting": (210, 153, 50),
-    "on":         (44,  186, 92),
-    "error":      (210, 55,  48),
+    "off":        (115, 115, 115),
+    "connecting": (170, 170, 170),
+    "on":         (245, 245, 245),
+    "error":      (255, 255, 255),
 }
 _SERVICE_MAP = {
     # Tor is a managed subprocess — checked separately via TorManager.is_running().
@@ -559,19 +564,29 @@ class _IpCheckWorker(QThread):
 
 # ── glow frame ────────────────────────────────────────────────
 
+def _qc(rgb, a: float = 255) -> QColor:
+    return QColor(rgb[0], rgb[1], rgb[2], max(0, min(255, int(a))))
+
+
 class _GlowFrame(QWidget):
     """
-    Central widget that paints:
-      1. Rounded-rect background (solid, parent window is transparent).
-      2. Animated ambient light blobs (slow breath cycle).
-      3. Theme-specific background effects (binary rain, circuit traces, pixel grid).
-      4. Animated colour-shifting glow border.
+    Central widget — the window's backdrop.  Paints:
+      1. The theme's base gradient.
+      2. A slowly drifting aurora (three soft colour fields) plus a status tint.
+      3. The theme's signature effect (binary rain, PCB traces, pixel blocks).
+      4. A hairline window border with a status-coloured glow.
+    It also keeps a heavily down-sampled copy of 1-3 (``frost()``) that the
+    GlassPanels draw scaled up — a real, in-window frosted-glass blur that does
+    not depend on the desktop compositor.
     """
-    _GLOW_W   = 8
-    _BLOB_FPS = 30
+    _GLOW_W     = 6
+    _FPS        = 30
+    _FROST_DOWN = 4     # backdrop is re-rendered at 1/4 size …
+    _FROST      = 16    # … then shrunk to 1/16: upscaling it back is the blur
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("glowFrame")
         self._rgb        = _glow_color("off")
         self._alpha      = 0.45
         self._glow_state = "off"
@@ -579,12 +594,24 @@ class _GlowFrame(QWidget):
         self._blob_phase  = 0.0
         self._blob_phase2 = math.pi
 
+        self._frost: QImage | None = None
+        self._frost_key = None
+
         self._blob_timer = QTimer(self)
         self._blob_timer.timeout.connect(self._blob_tick)
-        self._blob_timer.start(1000 // self._BLOB_FPS)
+        self._blob_timer.start(1000 // self._FPS)
+
+    # Animate only while visible — the app spends most of its life in the tray.
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        self._blob_timer.start(1000 // self._FPS)
+
+    def hideEvent(self, e) -> None:
+        super().hideEvent(e)
+        self._blob_timer.stop()
 
     def _blob_tick(self) -> None:
-        step = 2 * math.pi / (5 * self._BLOB_FPS)
+        step = 2 * math.pi / (14 * self._FPS)      # one aurora cycle ≈ 14 s
         self._blob_phase  = (self._blob_phase  + step) % (2 * math.pi)
         self._blob_phase2 = (self._blob_phase2 + step) % (2 * math.pi)
         self.update()
@@ -596,44 +623,72 @@ class _GlowFrame(QWidget):
         self._glow_state = state
         self.update()
 
-    # ── special theme backgrounds ─────────────────────────────
+    def frost(self) -> tuple["QImage | None", float]:
+        return self._frost, float(self._FROST)
+
+    def _window_radius(self) -> float:
+        c = theme()
+        return float(c["radius"] + (2 if c["name"] == "pixel" else 6))
+
+    # ── backdrop ──────────────────────────────────────────────
+
+    def _paint_backdrop(self, p: QPainter, w: float, h: float) -> None:
+        c  = theme()
+        ph = self._blob_phase
+        full = QRectF(0, 0, w, h)
+
+        base = QLinearGradient(0, 0, w * 0.3, h)
+        base.setColorAt(0.0, _qc(c["bg_rgb"]))
+        base.setColorAt(1.0, _qc(c["bg2_rgb"]))
+        p.fillRect(full, base)
+
+        # aurora: three soft colour fields drifting on slow Lissajous paths
+        spots = (
+            (0.16 + 0.10 * math.sin(ph),          0.10 + 0.06 * math.cos(ph * 0.8),  0.70),
+            (0.88 + 0.07 * math.cos(ph * 0.9),    0.42 + 0.10 * math.sin(ph * 0.7),  0.62),
+            (0.28 + 0.12 * math.sin(ph * 0.6 + 1), 0.88 + 0.05 * math.cos(ph),       0.72),
+        )
+        span = max(w, h)
+        for (rgb, a), (fx, fy, fr) in zip(c["aurora"], spots):
+            g = QRadialGradient(fx * w, fy * h, fr * span * 0.62)
+            g.setColorAt(0.0, _qc(rgb, a))
+            g.setColorAt(0.45, _qc(rgb, a * 0.38))
+            g.setColorAt(1.0, _qc(rgb, 0))
+            p.fillRect(full, g)
+
+        name = c["name"]
+        if name == "binary":
+            self._draw_binary_bg(p, w, h)
+        elif name == "circuit":
+            self._draw_circuit_bg(p, w, h)
+        elif name == "pixel":
+            self._draw_pixel_bg(p, w, h)
 
     def _draw_binary_bg(self, p: QPainter, w: float, h: float) -> None:
-        from PyQt6.QtGui import QFont
+        acc = theme()["accent"]
         font = QFont()
-        font.setFamily("JetBrains Mono,Fira Code,Cascadia Code,Courier New,monospace")
-        font.setPixelSize(11)
+        font.setFamily("JetBrains Mono,Fira Code,Cascadia Code,DejaVu Sans Mono,monospace")
+        font.setPixelSize(12)
         p.setFont(font)
         for nx, ny, ch, ph in _BINARY_CHARS:
-            t = (math.sin(self._blob_phase * 0.7 + ph) + 1) / 2
-            if t > 0.88:
-                color = QColor(215, 215, 215, int(210 * t))  # near-white
-            elif t > 0.58:
-                color = QColor(140, 140, 140, int(110 * t))  # mid gray
+            t = (math.sin(self._blob_phase * 2.2 + ph) + 1) / 2
+            if t > 0.9:
+                color = _qc(acc, 110 * t)
+            elif t > 0.5:
+                color = _qc(acc, 50 * t)
             else:
-                color = QColor(55,  55,  55,  int(55  * t))  # dark gray
+                color = _qc(acc, 16 * t)
             p.setPen(color)
-            p.drawText(int(nx * w), int(ny * h), ch)
+            p.drawText(QPointF(nx * w, ny * h), ch)
 
     def _draw_circuit_bg(self, p: QPainter, w: float, h: float) -> None:
-        """PCB-style background: CPU chip + thick orthogonal data-bus traces.
+        """PCB backdrop: dot matrix, orthogonal traces with vias, data pulses."""
+        tr, tg, tb = theme()["accent"]
+        all_pts = [[(xf * w, yf * h) for xf, yf in trace] for trace in _CPU_TRACES]
 
-        Three visual layers:
-          1. Static traces — thick lines + large via pads, always visible.
-          2. CPU chip outline — faint square behind the StatusRing widget.
-          3. Animated pulses — bright data packets flowing along each trace
-             (only when glow_state is "on" or "connecting").
-        """
-        # ── scale waypoints ───────────────────────────────────
-        all_pts = [
-            [(xf * w, yf * h) for xf, yf in trace]
-            for trace in _CPU_TRACES
-        ]
-
-        # ── background dot matrix (very subtle PCB texture) ───
-        dot_sp = 28.0
+        dot_sp = 26.0
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(190, 202, 218, 12))
+        p.setBrush(QColor(tr, tg, tb, 14))
         xd = dot_sp / 2
         while xd < w:
             yd = dot_sp / 2
@@ -642,196 +697,94 @@ class _GlowFrame(QWidget):
                 yd += dot_sp
             xd += dot_sp
 
-        # ── static trace lines (thick) ────────────────────────
         p.setBrush(Qt.BrushStyle.NoBrush)
-
-        # Group traces into 4 buses (3 per side); each bus gets a
-        # slightly different shade to give visual hierarchy.
-        bus_alpha = [52, 44, 36,   52, 44, 36,   52, 44, 36,   52, 44, 36]
+        bus_alpha = [40, 32, 26] * 4
         for ti, pts in enumerate(all_pts):
-            a   = bus_alpha[ti % len(bus_alpha)]
-            col = QColor(195, 208, 225, a)
-            p.setPen(QPen(col, 2.2,
-                          Qt.PenStyle.SolidLine,
-                          Qt.PenCapStyle.RoundCap,
-                          Qt.PenJoinStyle.RoundJoin))
+            p.setPen(QPen(QColor(tr, tg, tb, bus_alpha[ti]), 2.0, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
             for i in range(len(pts) - 1):
-                p.drawLine(QPointF(pts[i][0], pts[i][1]),
-                           QPointF(pts[i+1][0], pts[i+1][1]))
-
-        # ── via pads at every waypoint ────────────────────────
-        via_r = 4.0
+                p.drawLine(QPointF(*pts[i]), QPointF(*pts[i + 1]))
         for ti, pts in enumerate(all_pts):
-            via_a = bus_alpha[ti % len(bus_alpha)] + 28
-            p.setPen(QPen(QColor(195, 208, 225, via_a), 0.8))
-            p.setBrush(QColor(195, 208, 225, via_a - 12))
-            for px, py in pts:
-                p.drawEllipse(QRectF(px - via_r, py - via_r,
-                                     via_r * 2, via_r * 2))
+            a = bus_alpha[ti] + 26
+            p.setPen(QPen(QColor(tr, tg, tb, a), 0.8))
+            p.setBrush(QColor(tr, tg, tb, a - 14))
+            for px_, py_ in pts:
+                p.drawEllipse(QRectF(px_ - 3.5, py_ - 3.5, 7, 7))
 
-        # ── CPU chip outline (behind StatusRing) ──────────────
-        cx_px = w * _CPU_CX
-        cy_px = h * _CPU_CY
-        cw    = w * _CPU_HW * 2
-        ch    = h * _CPU_HH * 2
-
-        # Outer chip body
-        p.setPen(QPen(QColor(195, 208, 225, 52), 1.2))
-        p.setBrush(QColor(195, 208, 225, 8))
-        p.drawRoundedRect(QRectF(cx_px - cw/2, cy_px - ch/2, cw, ch), 4, 4)
-
-        # Inner die
-        dm = cw * 0.17
-        p.setPen(QPen(QColor(195, 208, 225, 30), 0.7))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRect(QRectF(cx_px - cw/2 + dm, cy_px - ch/2 + dm,
-                          cw - 2*dm, ch - 2*dm))
-
-        # Connector pads where traces touch the chip boundary
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(205, 218, 235, 72))
-        for trace in _CPU_TRACES:
-            tx, ty = trace[0][0] * w, trace[0][1] * h
-            p.drawRect(QRectF(tx - 3.2, ty - 3.2, 6.4, 6.4))
-
-        # ── animated data-packet pulses ───────────────────────
         if self._glow_state not in ("on", "connecting"):
             return
-
-        phase      = self._blob_phase
+        phase = self._blob_phase * 3
         cr, cg, cb = self._rgb
-        n_traces   = len(_CPU_TRACES)
-
+        n = len(all_pts)
         for ti, pts in enumerate(all_pts):
-            seg_lens = [
-                math.hypot(pts[j+1][0] - pts[j][0],
-                           pts[j+1][1] - pts[j][1])
-                for j in range(len(pts) - 1)
-            ]
-            total = sum(seg_lens)
+            seg = [math.hypot(pts[j + 1][0] - pts[j][0], pts[j + 1][1] - pts[j][1])
+                   for j in range(len(pts) - 1)]
+            total = sum(seg)
             if total < 1.0:
                 continue
-
-            # Each trace has a unique phase offset so packets are staggered
-            t    = ((phase / (2 * math.pi)) + ti / n_traces) % 1.0
-            dist = t * total
-
-            # Find pixel position at `dist` along the trace
-            cum        = 0.0
-            px_f, py_f = pts[0]
-            for j, seg_l in enumerate(seg_lens):
-                if cum + seg_l >= dist:
-                    frac   = (dist - cum) / seg_l if seg_l > 0 else 0.0
-                    px_f   = pts[j][0] + (pts[j+1][0] - pts[j][0]) * frac
-                    py_f   = pts[j][1] + (pts[j+1][1] - pts[j][1]) * frac
+            dist = (((phase / (2 * math.pi)) + ti / n) % 1.0) * total
+            cum, (px_, py_) = 0.0, pts[-1]
+            for j, sl in enumerate(seg):
+                if cum + sl >= dist:
+                    f = (dist - cum) / sl if sl else 0.0
+                    px_ = pts[j][0] + (pts[j + 1][0] - pts[j][0]) * f
+                    py_ = pts[j][1] + (pts[j + 1][1] - pts[j][1]) * f
                     break
-                cum += seg_l
-            else:
-                px_f, py_f = pts[-1]
-
-            # Glow halo + bright white core
+                cum += sl
             bright = 0.55 + 0.45 * math.sin(phase + ti * 0.88)
             p.setPen(Qt.PenStyle.NoPen)
-            for ring in range(9, 0, -1):
-                a    = int(190 * bright * ((9 - ring + 1) / 9) ** 2.2)
-                r_sz = ring * 1.55
-                p.setBrush(QColor(cr, cg, cb, a))
-                p.drawEllipse(QRectF(px_f - r_sz, py_f - r_sz,
-                                     r_sz * 2, r_sz * 2))
-            # Bright near-white core
-            core_a = int(240 * bright)
-            p.setBrush(QColor(235, 245, 255, core_a))
-            p.drawEllipse(QRectF(px_f - 2.2, py_f - 2.2, 4.4, 4.4))
+            p.setBrush(QColor(cr, cg, cb, int(110 * bright)))
+            p.drawEllipse(QRectF(px_ - 2, py_ - 2, 4, 4))
 
     def _draw_pixel_bg(self, p: QPainter, w: float, h: float) -> None:
-        cell = 20  # Minecraft-sized pixel blocks, snapped to grid
-        # Strictly monochrome: white, mid-grey, dark-grey
-        shades = [200, 140, 80]
+        cell = 20
+        cols = [rgb for rgb, _a in theme()["aurora"]]
         for nx, ny, ci, ph in _PIXEL_BLOCKS:
-            t = (math.sin(self._blob_phase * 0.45 + ph) + 1) / 2
-            if t < 0.20:
+            t = (math.sin(self._blob_phase * 1.6 + ph) + 1) / 2
+            if t < 0.25:
                 continue
-            lum = shades[ci % len(shades)]
-            a   = int(8 + 28 * t)
-            x   = (int(nx * (w - cell)) // cell) * cell
-            y   = (int(ny * (h - cell)) // cell) * cell
-            p.fillRect(x, y, cell, cell, QColor(lum, lum, lum, a))
+            x = (int(nx * (w - cell)) // cell) * cell
+            y = (int(ny * (h - cell)) // cell) * cell
+            p.fillRect(x, y, cell, cell, _qc(cols[ci % len(cols)], 6 + 22 * t))
+
+    def _refresh_frost(self, w: int, h: int) -> None:
+        key = (round(self._blob_phase, 4), w, h, theme()["name"],
+               self._glow_state, round(self._alpha, 2))
+        if key == self._frost_key and self._frost is not None:
+            return
+        d = self._FROST_DOWN
+        small = QImage(max(1, w // d), max(1, h // d), QImage.Format.Format_ARGB32_Premultiplied)
+        small.fill(Qt.GlobalColor.transparent)
+        sp = QPainter(small)
+        sp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        sp.scale(1 / d, 1 / d)
+        self._paint_backdrop(sp, float(w), float(h))
+        sp.end()
+        f = self._FROST
+        self._frost = small.scaled(max(1, w // f), max(1, h // f),
+                                   Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+        self._frost_key = key
 
     def paintEvent(self, _e) -> None:
+        c = theme()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
         rect = QRectF(self.rect())
-        c    = theme()
-        r    = float(c.get("radius", _CORNER_R))
+        r = self._window_radius()
 
-        # ── 1. solid rounded background ───────────────────────
-        bg_rgb = c.get("bg_rgb", (0, 0, 0))
-        path   = QPainterPath()
+        # Children (GlassPanels) paint after us in this same pass and read it.
+        self._refresh_frost(self.width(), self.height())
+
+        path = QPainterPath()
         path.addRoundedRect(rect, r, r)
-        p.fillPath(path, QColor(*bg_rgb))
-
         p.setClipPath(path)
-
-        fw, fh = rect.width(), rect.height()
-
-        # ── 2. theme-specific background effects ──────────────
-        theme_name = c["name"]
-        if theme_name == "binary":
-            self._draw_binary_bg(p, fw, fh)
-        elif theme_name == "circuit":
-            self._draw_circuit_bg(p, fw, fh)
-        elif theme_name == "pixel":
-            self._draw_pixel_bg(p, fw, fh)
-
-        # ── 3. animated ambient blobs (monochrome) ────────────
-        is_dark = c["name"] != "light"
-        # All themes use white or black blobs at low alpha for a subtle vignette
-        blob_lum  = 255 if is_dark else 0
-        max_b     = 30  if is_dark else 12
-        max_g     = 22  if is_dark else 8
-
-        t1 = 0.45 + 0.55 * (math.sin(self._blob_phase)  + 1) / 2
-        t2 = 0.45 + 0.55 * (math.sin(self._blob_phase2) + 1) / 2
-
-        g1 = QRadialGradient(fw * 0.88, fh * 0.06, fw * 0.60)
-        g1.setColorAt(0.0, QColor(blob_lum, blob_lum, blob_lum, int(max_b * t1)))
-        g1.setColorAt(1.0, QColor(blob_lum, blob_lum, blob_lum, 0))
-        p.fillRect(rect, g1)
-
-        g2 = QRadialGradient(fw * 0.12, fh * 0.94, fw * 0.52)
-        g2.setColorAt(0.0, QColor(blob_lum, blob_lum, blob_lum, int(max_g * t2)))
-        g2.setColorAt(1.0, QColor(blob_lum, blob_lum, blob_lum, 0))
-        p.fillRect(rect, g2)
-
-        # Accent glow from current status colour
-        cr, cg, cb = self._rgb
-        t3       = 0.3 + 0.7 * (math.sin(self._blob_phase + math.pi * 0.66) + 1) / 2
-        accent_a = int((20 if is_dark else 8) * t3 * max(0.2, self._alpha))
-        g3 = QRadialGradient(fw * 0.50, fh * 0.35, fw * 0.55)
-        g3.setColorAt(0.0, QColor(cr, cg, cb, accent_a))
-        g3.setColorAt(1.0, QColor(cr, cg, cb, 0))
-        p.fillRect(rect, g3)
-
+        self._paint_backdrop(p, rect.width(), rect.height())
         p.setClipping(False)
 
-        # ── 4. glow rings ─────────────────────────────────────
-        cr2, cg2, cb2 = self._rgb
-        alpha         = self._alpha
-        gw            = self._GLOW_W
-
-        for i in range(gw, 0, -1):
-            factor = ((gw - i + 1) / gw) ** 2.2
-            a      = int(alpha * 150 * factor)
-            p.setPen(QPen(QColor(cr2, cg2, cb2, a), 1))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            ri = rect.adjusted(i, i, -i, -i)
-            ri_r = max(0.0, r - i * 0.5)
-            p.drawRoundedRect(ri, ri_r, ri_r)
-
-        # ── 5. crisp outer border ──────────────────────────────
-        border_a = int(200 * alpha)
-        p.setPen(QPen(QColor(cr2, cg2, cb2, border_a), 1.2))
+        # neutral hairline window border
+        gb = c["glass_border"]
+        p.setPen(QPen(_qc(gb, min(255, gb[3] * 2)), 1.0))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(rect.adjusted(0.6, 0.6, -0.6, -0.6), r, r)
 
@@ -846,8 +799,8 @@ class _TitleBar(QWidget):
     • ✕ button minimises to tray (does NOT quit).
     """
 
-    _LOGO_SIZE = 40
-    _TOTAL_H   = 62
+    _LOGO_SIZE = 32
+    _TOTAL_H   = 52
 
     def __init__(self, win: "MainWindow"):
         super().__init__(win)
@@ -857,12 +810,10 @@ class _TitleBar(QWidget):
         self.setObjectName("appHeader")
         self.setFixedHeight(self._TOTAL_H)
 
-        # Single horizontal row: [logo] [title] [spacer] [buttons]
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 0, 14, 0)
-        lay.setSpacing(12)
+        lay.setContentsMargins(4, 0, 0, 0)
+        lay.setSpacing(10)
 
-        # ── logo (left) ───────────────────────────────────────
         self._logo_lbl = QLabel()
         self._logo_lbl.setObjectName("logoLbl")
         self._logo_lbl.setFixedSize(self._LOGO_SIZE, self._LOGO_SIZE)
@@ -871,58 +822,54 @@ class _TitleBar(QWidget):
         self._set_logo_pixmap(_logo_for_theme(theme()["name"]))
         lay.addWidget(self._logo_lbl)
 
-        # ── title beside logo ─────────────────────────────────
-        title = QLabel("ENTROPY SHIELD")
+        title = QLabel("Entropy Shield")
         title.setObjectName("appTitle")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         lay.addWidget(title)
-        lay.addSpacing(4)
-        lay.addWidget(maze_linux_tag("for Maze Linux"))
+        lay.addWidget(maze_linux_tag("for Maze Linux"), alignment=Qt.AlignmentFlag.AlignVCenter)
         lay.addStretch()
 
-        # ☢ Panic (emergency disconnect)
-        btn_panic = QPushButton("☢")
+        btn_panic = QPushButton(" Panic")
+        btn_panic.setIconSize(icons.qsize(15))
+        self._btn_panic = btn_panic
         btn_panic.setObjectName("panicBtn")
-        btn_panic.setFixedSize(26, 26)
         btn_panic.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_panic.setToolTip("PANIC: Emergency disconnect — kills all connections immediately")
+        btn_panic.setToolTip("Emergency disconnect — tears down every layer immediately")
         btn_panic.clicked.connect(win._on_panic)
         lay.addWidget(btn_panic)
+        lay.addSpacing(2)
 
-        # ⎯  Minimize
-        btn_min = QPushButton("⎯")
-        btn_min.setObjectName("minBtn")
-        btn_min.setFixedSize(26, 26)
-        btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_min.setToolTip("Minimize")
-        btn_min.clicked.connect(win.showMinimized)
-        lay.addWidget(btn_min)
+        self._icon_btns = []
+        for name, tip, slot, role in (
+            ("settings", "Settings",         win._open_settings, ""),
+            ("minus",    "Minimize",         win.showMinimized,  ""),
+            ("x",        "Minimize to tray", win.close,          "close"),
+        ):
+            b = QPushButton()
+            b.setIconSize(icons.qsize(16))
+            self._icon_btns.append((b, name))
+            b.setObjectName("iconBtn")
+            b.setProperty("role", role)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            lay.addWidget(b)
 
-        # ⚙  Settings
-        btn_set = QPushButton("⚙")
-        btn_set.setObjectName("settingsBtn")
-        btn_set.setFixedSize(26, 26)
-        btn_set.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_set.setToolTip("Settings")
-        btn_set.clicked.connect(win._open_settings)
-        lay.addWidget(btn_set)
-
-        # ✕  Hide to tray (NOT quit)
-        btn_close = QPushButton("✕")
-        btn_close.setObjectName("quitBtn")
-        btn_close.setFixedSize(26, 26)
-        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_close.setToolTip("Minimize to tray")
-        btn_close.clicked.connect(win.close)
-        lay.addWidget(btn_close)
+    def refresh_icons(self) -> None:
+        c = theme()
+        self._btn_panic.setIcon(icons.icon("siren", c["red"]))
+        for b, name in self._icon_btns:
+            b.setIcon(icons.icon(name, c["text_muted"]))
 
     def _set_logo_pixmap(self, path: str) -> None:
         if path:
             src = QPixmap(path)
             if not src.isNull():
-                pix = src.scaled(self._LOGO_SIZE, self._LOGO_SIZE,
+                dpr = self.devicePixelRatioF() or 1.0
+                pix = src.scaled(int(self._LOGO_SIZE * dpr), int(self._LOGO_SIZE * dpr),
                                  Qt.AspectRatioMode.KeepAspectRatio,
                                  Qt.TransformationMode.SmoothTransformation)
+                pix.setDevicePixelRatio(dpr)
                 self._logo_lbl.setPixmap(pix)
                 return
         self._logo_lbl.clear()
@@ -934,7 +881,6 @@ class _TitleBar(QWidget):
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.MouseButton.LeftButton:
-            # Try native system move (required for Wayland; works on X11 too)
             handle = self._win.windowHandle()
             if handle:
                 try:
@@ -943,7 +889,6 @@ class _TitleBar(QWidget):
                     return
                 except Exception:
                     pass
-            # X11 fallback: manual QPoint tracking
             self._drag_pos = e.globalPosition().toPoint() - self._win.pos()
         e.accept()
 
@@ -965,6 +910,32 @@ class _TitleBar(QWidget):
         e.accept()
 
 
+class _ConnectButton(QPushButton):
+    """The primary action; hosts the progress spinner inside its left edge."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.spinner = Spinner(18, self)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        s = self.spinner
+        s.move(18, (self.height() - s.height()) // 2)
+
+
+_LAYER_NAMES = {"tor": "Tor", "dnscrypt": "DNSCrypt", "i2p": "I2P",
+                "onion_server": "Onion Server"}
+
+
+def _layer_label(layers) -> str:
+    return "  ·  ".join(_LAYER_NAMES.get(l, l) for l in layers)
+
+
+def _title_case(text: str) -> str:
+    """'CONNECTING...' → 'Connecting...'; already mixed-case text is kept."""
+    return " ".join(w.capitalize() if w.isupper() else w for w in text.split(" "))
+
+
 # ── main window ───────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -981,8 +952,13 @@ class MainWindow(QMainWindow):
         if _logo:
             self.setWindowIcon(_make_window_icon(_logo))
 
-        self.setMinimumSize(560, 680)
-        self.resize(560, 740)
+        # Fit smaller screens (1366×768 laptops): the log panel absorbs the
+        # difference and can be collapsed.
+        self.setMinimumSize(520, 700)
+        avail = QGuiApplication.primaryScreen().availableGeometry() \
+            if QGuiApplication.primaryScreen() else None
+        h = min(900, avail.height() - 40) if avail else 860
+        self.resize(560, max(700, h))
 
         self._connected      = False
         self._worker:          _Worker | None            = None
@@ -1145,6 +1121,7 @@ class MainWindow(QMainWindow):
         for card in (self._card_tor, self._card_dns,
                      self._card_i2p, self._card_onion):
             card.refresh_theme()
+        self._refresh_icons()
         if logo_path:
             self.setWindowIcon(_make_window_icon(logo_path))
         self._tray_send(f"icon:{logo_path}")
@@ -1164,181 +1141,244 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self._glow_frame = _GlowFrame()
         self.setCentralWidget(self._glow_frame)
+        set_backdrop(self._glow_frame)
 
-        pad = _GlowFrame._GLOW_W + 10
         content = QVBoxLayout(self._glow_frame)
-        content.setContentsMargins(pad, pad, pad, pad)
-        content.setSpacing(0)
+        content.setContentsMargins(16, 8, 16, 16)
+        content.setSpacing(12)
+        self._content = content
 
         self._title_bar = _TitleBar(self)
         content.addWidget(self._title_bar)
-        content.addSpacing(14)
-        content.addLayout(self._build_status_area())
-        content.addSpacing(14)
-        content.addLayout(self._build_cards())
-        content.addSpacing(10)
+        content.addWidget(self._build_status_area())
+        content.addWidget(self._build_cards())
         content.addWidget(self._build_connect_row())
-        content.addSpacing(6)
         content.addWidget(self._build_browser_row())
-        content.addSpacing(8)
         content.addWidget(self._build_log(), stretch=1)
+        content.addStretch(0)   # takes the space when the log is collapsed
+        self._refresh_icons()
 
-    def _build_status_area(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(4)
+    def _build_status_area(self) -> QWidget:
+        hero = GlassPanel()
+        col = QVBoxLayout(hero)
+        col.setContentsMargins(18, 16, 18, 14)
+        col.setSpacing(10)
 
-        ring_row = QHBoxLayout()
-        ring_row.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._status_ring = StatusRing(108)
+        top = QHBoxLayout()
+        top.setSpacing(18)
+        self._status_ring = StatusRing(96)
         self._status_ring.set_state("off")
-        ring_row.addWidget(self._status_ring)
+        top.addWidget(self._status_ring)
 
-        self._status_lbl = QLabel("DISCONNECTED")
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        badge_row = QHBoxLayout()
+        self._status_badge = QLabel("NOT PROTECTED")
+        self._status_badge.setObjectName("statusBadge")
+        self._status_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        badge_row.addWidget(self._status_badge)
+        badge_row.addStretch()
+
+        self._status_lbl = QLabel("Disconnected")
         self._status_lbl.setObjectName("statusTitle")
-        self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_lbl.setProperty("state", "off")
 
         self._status_sub = QLabel("Select layers and connect")
         self._status_sub.setObjectName("statusSub")
-        self._status_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_sub.setWordWrap(True)
+
+        text.addStretch()
+        text.addLayout(badge_row)
+        text.addWidget(self._status_lbl)
+        text.addWidget(self._status_sub)
+        text.addStretch()
+        top.addLayout(text, stretch=1)
+        col.addLayout(top)
 
         self._speed_bar = NetSpeedGraph()
-
-        col.addLayout(ring_row)
-        col.addWidget(self._status_lbl)
-        col.addWidget(self._status_sub)
         col.addWidget(self._speed_bar)
-        return col
+        return hero
 
-    def _build_cards(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self._card_tor   = ServiceCard("tor")
-        self._card_dns   = ServiceCard("dnscrypt")
-        self._card_i2p   = ServiceCard("i2p")
-        self._card_onion = ServiceCard("onion_server", checked=False)
-        for card in (self._card_tor, self._card_dns,
-                     self._card_i2p, self._card_onion):
+    def _build_cards(self) -> QWidget:
+        panel = GlassPanel()
+        col = QVBoxLayout(panel)
+        col.setContentsMargins(10, 12, 10, 8)
+        col.setSpacing(0)
+
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(8, 0, 8, 6)
+        title = QLabel("PRIVACY LAYERS")
+        title.setObjectName("sectionTitle")
+        hint = QLabel("Choose layers, then connect")
+        hint.setObjectName("sectionHint")
+        hdr.addWidget(title)
+        hdr.addStretch()
+        hdr.addWidget(hint)
+        col.addLayout(hdr)
+
+        self._card_tor   = LayerRow("tor")
+        self._card_dns   = LayerRow("dnscrypt")
+        self._card_i2p   = LayerRow("i2p")
+        self._card_onion = LayerRow("onion_server", checked=False)
+        cards = (self._card_tor, self._card_dns, self._card_i2p, self._card_onion)
+        for i, card in enumerate(cards):
+            if i:
+                div = QFrame()
+                div.setObjectName("layerDivider")
+                div.setFixedHeight(1)
+                wrap = QHBoxLayout()
+                wrap.setContentsMargins(58, 0, 8, 0)
+                wrap.addWidget(div)
+                col.addLayout(wrap)
             card.settings_clicked.connect(self._open_settings_tab)
-            row.addWidget(card)
+            col.addWidget(card)
         self._card_tor.toggled.connect(self._on_tor_toggled)
         self._card_onion.toggled.connect(self._on_onion_toggled)
-        for card in (self._card_tor, self._card_dns,
-                     self._card_i2p, self._card_onion):
+        for card in cards:
             card.toggled.connect(self._on_layer_toggled)
-        return row
+        return panel
 
     def _build_connect_row(self) -> QWidget:
-        w   = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
-
-        self._connect_btn = QPushButton("CONNECT")
+        self._connect_btn = _ConnectButton("Connect")
         self._connect_btn.setObjectName("connectBtn")
         self._connect_btn.setCheckable(True)
+        self._connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._connect_btn.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._connect_btn.clicked.connect(self._on_connect_clicked)
+        self._spinner = self._connect_btn.spinner
+        return self._connect_btn
 
-        self._spinner = Spinner(20)
-        lay.addWidget(self._connect_btn)
-        lay.addWidget(self._spinner)
-        return w
+    def _tool_button(self, text: str, tip: str, slot, icon: str,
+                     enabled: bool = False) -> QPushButton:
+        b = QPushButton("  " + text)
+        b.setProperty("icon_name", icon)
+        b.setIconSize(icons.qsize(17))
+        b.setObjectName("toolBtn")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setEnabled(enabled)
+        b.setToolTip(tip)
+        b.clicked.connect(slot)
+        b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return b
 
     def _build_browser_row(self) -> QWidget:
-        w   = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(8)
+        panel = GlassPanel()
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
 
-        self._tor_browser_btn = QPushButton("TOR BROWSER")
-        self._tor_browser_btn.setObjectName("torBrowserBtn")
-        self._tor_browser_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._tor_browser_btn.setEnabled(False)
-        self._tor_browser_btn.setToolTip(
-            "Isolated browser routed through Tor.\nSupports Firefox, Chromium, Brave.")
-        self._tor_browser_btn.clicked.connect(self._on_open_tor_browser)
+        self._tor_browser_btn = self._tool_button(
+            "Tor Browser",
+            "Isolated, hardened browser profile routed through Tor.\n"
+            "Supports Firefox, Chromium, Brave.", self._on_open_tor_browser,
+            "brand-torbrowser")
+        self._i2p_browser_btn = self._tool_button(
+            "I2P Browser",
+            "Isolated browser profile routed through I2P.\n"
+            "Supports Firefox, Chromium, Brave.", self._on_open_i2p_browser, "globe")
+        self._proxy_terminal_btn = self._tool_button(
+            "Terminal",
+            "Open a terminal with Tor proxy variables pre-set.\n"
+            "curl http://abc.onion works there. No system files are changed.",
+            self._on_open_proxy_terminal, "square-terminal")
+        self._ip_check_btn = self._tool_button(
+            "IP Check", "Show your public IP as seen through Tor (needs curl).",
+            self._on_ip_check, "map-pin")
+        self._new_circuit_btn = self._tool_button(
+            "New Circuit",
+            "Request a new Tor identity (SIGNAL NEWNYM): new exit node,\n"
+            "fresh stream isolation.", self._on_new_circuit, "refresh-cw")
+        self._leak_test_btn = self._tool_button(
+            "Leak Test",
+            "Run DNS, IPv6, WebRTC/UDP, timezone and hostname leak tests.",
+            self._on_leak_test, "shield-check")
 
-        self._i2p_browser_btn = QPushButton("I2P BROWSER")
-        self._i2p_browser_btn.setObjectName("i2pBrowserBtn")
-        self._i2p_browser_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._i2p_browser_btn.setEnabled(False)
-        self._i2p_browser_btn.setToolTip(
-            "Isolated browser routed through I2P.\nSupports Firefox, Chromium, Brave.")
-        self._i2p_browser_btn.clicked.connect(self._on_open_i2p_browser)
-
-        self._proxy_terminal_btn = QPushButton("PROXY TERMINAL")
-        self._proxy_terminal_btn.setObjectName("proxyTerminalBtn")
-        self._proxy_terminal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._proxy_terminal_btn.setEnabled(False)
-        self._proxy_terminal_btn.setToolTip(
-            "Open a terminal with Tor proxy env vars pre-set.\n"
-            "curl http://abc.onion works in this terminal.\n"
-            "No system-wide files are modified.")
-        self._proxy_terminal_btn.clicked.connect(self._on_open_proxy_terminal)
-
-        lay.addWidget(self._tor_browser_btn)
-        lay.addWidget(self._i2p_browser_btn)
-        lay.addWidget(self._proxy_terminal_btn)
-        return w
+        self._tool_btns = (self._tor_browser_btn, self._i2p_browser_btn,
+                           self._proxy_terminal_btn, self._ip_check_btn,
+                           self._new_circuit_btn, self._leak_test_btn)
+        for i, b in enumerate(self._tool_btns):
+            grid.addWidget(b, i // 3, i % 3)
+        return panel
 
     def _build_log(self) -> QWidget:
-        wrapper = QWidget()
-        lay     = QVBoxLayout(wrapper)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(5)
+        panel = GlassPanel()
+        self._log_panel = panel
+        col = QVBoxLayout(panel)
+        col.setContentsMargins(16, 10, 10, 12)
+        col.setSpacing(6)
 
         hdr = QHBoxLayout()
-        lbl = QLabel("ACTIVITY LOG")
-        lbl.setObjectName("logLabel")
-        hdr.addWidget(lbl)
-        hdr.addStretch()
+        hdr.setSpacing(8)
+        lbl = QLabel("ACTIVITY")
+        lbl.setObjectName("sectionTitle")
+        self._log_count = QLabel("0")
+        self._log_count.setObjectName("countBadge")
+        self._log_preview = QLabel("")
+        self._log_preview.setObjectName("logPreview")
+        self._log_preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._log_preview.hide()
 
-        self._ip_check_btn = QPushButton("IP CHECK")
-        self._ip_check_btn.setObjectName("toolBtn")
-        self._ip_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._ip_check_btn.setEnabled(False)
-        self._ip_check_btn.setToolTip("Check IP via Tor SOCKS (requires curl).")
-        self._ip_check_btn.clicked.connect(self._on_ip_check)
-
-        self._new_circuit_btn = QPushButton("NEW CIRCUIT")
-        self._new_circuit_btn.setObjectName("toolBtn")
-        self._new_circuit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._new_circuit_btn.setEnabled(False)
-        self._new_circuit_btn.setToolTip(
-            "Request a new Tor circuit (SIGNAL NEWNYM).\n"
-            "Changes your exit node and clears stream associations.")
-        self._new_circuit_btn.clicked.connect(self._on_new_circuit)
-
-        exp_btn = QPushButton("⬇ EXPORT")
-        exp_btn.setObjectName("toolBtn")
+        exp_btn = QPushButton(" Export")
+        exp_btn.setIconSize(icons.qsize(14))
+        self._log_export = exp_btn
+        exp_btn.setObjectName("ghostBtn")
         exp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        exp_btn.setToolTip("Save activity log to file.")
+        exp_btn.setToolTip("Save the activity log to a file in your home folder.")
         exp_btn.clicked.connect(self._export_log)
 
-        self._leak_test_btn = QPushButton("LEAK TEST")
-        self._leak_test_btn.setObjectName("toolBtn")
-        self._leak_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._leak_test_btn.setEnabled(False)
-        self._leak_test_btn.setToolTip(
-            "Run DNS, IPv6, WebRTC, timezone and hostname leak tests.")
-        self._leak_test_btn.clicked.connect(self._on_leak_test)
+        self._log_toggle = QPushButton(" Hide")
+        self._log_toggle.setIconSize(icons.qsize(14))
+        self._log_toggle.setObjectName("ghostBtn")
+        self._log_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_toggle.clicked.connect(self._toggle_log)
 
-        hdr.addWidget(self._ip_check_btn)
-        hdr.addSpacing(4)
-        hdr.addWidget(self._new_circuit_btn)
-        hdr.addSpacing(4)
-        hdr.addWidget(self._leak_test_btn)
-        hdr.addSpacing(4)
+        hdr.addWidget(lbl)
+        hdr.addWidget(self._log_count)
+        hdr.addWidget(self._log_preview, stretch=1)
+        hdr.addStretch()
         hdr.addWidget(exp_btn)
+        hdr.addWidget(self._log_toggle)
 
         self._log_widget = QTextEdit()
         self._log_widget.setObjectName("log")
         self._log_widget.setReadOnly(True)
+        self._log_widget.setMinimumHeight(80)
+        self._log_lines = 0
+        self._log_last = ""
 
-        lay.addLayout(hdr)
-        lay.addWidget(self._log_widget)
-        return wrapper
+        col.addLayout(hdr)
+        col.addWidget(self._log_widget, stretch=1)
+        return panel
+
+    def _refresh_icons(self) -> None:
+        """(Re)tint every icon for the current theme."""
+        c = theme()
+        self._title_bar.refresh_icons()
+        for b in self._tool_btns:
+            b.setIcon(icons.icon(b.property("icon_name"), c["text"], disabled=c["text_dim"]))
+        self._log_export.setIcon(icons.icon("download", c["text_muted"]))
+        open_ = self._log_widget.isVisible() or not self.isVisible()
+        self._log_toggle.setIcon(icons.icon(
+            "chevron-down" if open_ else "chevron-right", c["text_muted"]))
+
+    def _toggle_log(self) -> None:
+        show = not self._log_widget.isVisible()
+        self._log_widget.setVisible(show)
+        self._log_preview.setVisible(not show)
+        self._log_toggle.setText(" Hide" if show else " Show")
+        self._refresh_icons()
+        idx = self._content.indexOf(self._log_panel)
+        self._content.setStretch(idx, 1 if show else 0)
+        self._content.setStretch(self._content.count() - 1, 0 if show else 1)
+        self._update_log_preview()
+
+    def _update_log_preview(self) -> None:
+        fm = self._log_preview.fontMetrics()
+        w = max(40, self._log_preview.width())
+        self._log_preview.setText(
+            fm.elidedText(self._log_last, Qt.TextElideMode.ElideRight, w))
 
     # ── settings ──────────────────────────────────────────────
 
@@ -1394,20 +1434,19 @@ class MainWindow(QMainWindow):
     # ── status ────────────────────────────────────────────────
 
     def _set_status(self, state: str, title: str, sub: str) -> None:
-        c = theme()
-        color_map = {
-            "off":        c["text_muted"],
-            "connecting": c["yellow"],
-            "on":         c["green"],
-            "error":      c["red"],
+        badge = {
+            "off":        "NOT PROTECTED",
+            "connecting": "WORKING",
+            "on":         "PROTECTED",
+            "error":      "ATTENTION",
         }
         self._status_ring.set_state(state)
-        self._status_lbl.setText(title)
-        self._status_lbl.setStyleSheet(
-            f"color:{color_map.get(state, c['text'])};"
-            "font-size:15px;font-weight:700;letter-spacing:4px;"
-            "background:transparent;"
-        )
+        self._status_lbl.setText(_title_case(title))
+        self._status_badge.setText(badge.get(state, "NOT PROTECTED"))
+        for w in (self._status_lbl, self._status_badge):
+            w.setProperty("state", state)
+            w.style().unpolish(w)
+            w.style().polish(w)
         self._status_sub.setText(sub)
 
     # ── connect / disconnect ───────────────────────────────────
@@ -1434,7 +1473,7 @@ class MainWindow(QMainWindow):
     def _start_worker(self, action: str, layers: dict) -> None:
         self._connect_btn.setEnabled(False)
         self._connect_btn.setText(
-            "CONNECTING..." if action == "connect" else "DISCONNECTING...")
+            "Connecting…" if action == "connect" else "Disconnecting…")
         self._spinner.start()
         self._set_cards_enabled(False)
         self._set_glow("connecting")
@@ -1484,10 +1523,9 @@ class MainWindow(QMainWindow):
         if success and info == "connect":
             self._connected = True
             self._connect_btn.setChecked(True)
-            self._connect_btn.setText("DISCONNECT")
+            self._connect_btn.setText("Disconnect")
             self._set_glow("on")
-            layers_str = "  ·  ".join(
-                l.upper().replace("_", " ") for l in self._active_layers)
+            layers_str = _layer_label(self._active_layers)
             self._set_status("on", "PROTECTED", layers_str)
             for card in self._active_cards():
                 card.set_status("active")
@@ -1539,14 +1577,14 @@ class MainWindow(QMainWindow):
                     k.replace("use_", "") for k, v in layers.items() if v]
                 self._set_glow("connecting")
                 self._set_status("connecting", "RECONNECTING…", "Applying layer changes…")
-                self._connect_btn.setText("CONNECTING...")
+                self._connect_btn.setText("Connecting…")
                 self._connect_btn.setChecked(True)
                 QTimer.singleShot(200, lambda: self._start_worker("connect", layers))
                 return
 
             self._active_layers = []
             self._connect_btn.setChecked(False)
-            self._connect_btn.setText("CONNECT")
+            self._connect_btn.setText("Connect")
             self._set_glow("off")
             self._set_status("off", "DISCONNECTED", "Select layers and connect")
             for card in (self._card_tor, self._card_dns,
@@ -1565,7 +1603,7 @@ class MainWindow(QMainWindow):
             self._connected = False
             self._active_layers = []
             self._connect_btn.setChecked(False)
-            self._connect_btn.setText("CONNECT")
+            self._connect_btn.setText("Connect")
             self._set_glow("error")
             short = info[:70] if len(info) > 70 else info
             self._set_status("error", "ERROR", short)
@@ -1616,7 +1654,7 @@ class MainWindow(QMainWindow):
             self._connected = False
             self._active_layers = []
             self._connect_btn.setChecked(False)
-            self._connect_btn.setText("CONNECT")
+            self._connect_btn.setText("Connect")
             self._set_glow("error")
             self._set_status("error", "ERROR", "Runner died — reconnect to restore")
             for card in (self._card_tor, self._card_dns,
@@ -1726,14 +1764,12 @@ class MainWindow(QMainWindow):
         m, s    = divmod(rem, 60)
         dur     = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
-        parts = []
-        for l in self._active_layers:
-            parts.append(l.upper().replace("_", " "))
+        parts = [_layer_label(self._active_layers)]
 
         info_parts = []
         if "tor" in self._active_layers:
             if self._exit_country:
-                info_parts.append(f"EXIT: {self._exit_country}")
+                info_parts.append(f"Exit {self._exit_country}")
             if self._circuit_count:
                 info_parts.append(f"{self._circuit_count} circuits")
         if info_parts:
@@ -1800,7 +1836,7 @@ class MainWindow(QMainWindow):
         self._exit_country   = ""
         self._circuit_count  = 0
         self._connect_btn.setChecked(False)
-        self._connect_btn.setText("CONNECT")
+        self._connect_btn.setText("Connect")
         self._connect_btn.setEnabled(True)
         self._set_glow("off")
         self._set_status("off", "DISCONNECTED", "Select layers and connect")
@@ -1952,7 +1988,7 @@ class MainWindow(QMainWindow):
 
     # ── helpers ───────────────────────────────────────────────
 
-    def _active_cards(self) -> list[ServiceCard]:
+    def _active_cards(self) -> list[LayerRow]:
         return [c for c in (self._card_tor, self._card_dns,
                              self._card_i2p, self._card_onion)
                 if c.is_checked]
@@ -1962,9 +1998,41 @@ class MainWindow(QMainWindow):
                      self._card_i2p, self._card_onion):
             card.set_enabled_ui(enabled)
 
+    _LOG_TAG = re.compile(r"^(\[[A-Z0-9 _>!-]+\])(.*)$", re.DOTALL)
+
     def _append_log(self, msg: str) -> None:
-        self._log_widget.append(msg)
+        c = theme()
+        # Monochrome: problems are bright and bold, successes bright, the rest grey.
+        upper = msg.upper()
+        weight = "400"
+        if any(k in upper for k in ("[ERR]", "[!]", "ERROR", "FAILED", "✗",
+                                    "WARNING", "KILL SWITCH", "[PANIC]")):
+            body, weight = c["text"], "700"
+        elif "[OK]" in upper or "✓" in msg:
+            body = c["text"]
+        else:
+            body = c["log_fg"]
+
+        tag, rest = "", msg
+        m = self._LOG_TAG.match(msg)
+        if m:
+            tag, rest = m.group(1), m.group(2)
+        tag_col = c["text_muted"]
+
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        esc = lambda s: html.escape(s).replace("\n", "<br>")
+        line = (f'<span style="color:{c["text_dim"]}">{ts}</span>&nbsp;&nbsp;'
+                + (f'<span style="color:{tag_col};font-weight:600">{esc(tag)}</span>'
+                   if tag else "")
+                + f'<span style="color:{body};font-weight:{weight};white-space:pre-wrap">{esc(rest)}</span>')
+        self._log_widget.append(line)
         self._log_widget.moveCursor(QTextCursor.MoveOperation.End)
+
+        self._log_lines += 1
+        self._log_count.setText(str(self._log_lines))
+        self._log_last = msg.replace("\n", " ")
+        if self._log_preview.isVisible():
+            self._update_log_preview()
 
     # ── system tray ───────────────────────────────────────────
 
@@ -2123,16 +2191,10 @@ class MainWindow(QMainWindow):
             self._settings.setGeometry(self._glow_frame.rect())
 
 
-def maze_linux_tag(text: str, size_px: int = 10):
-    """The small "for Maze Linux" line beside the app name. It takes the
-    surrounding text colour and fades it, so it reads right in every theme."""
-    from PyQt6.QtWidgets import QGraphicsOpacityEffect, QLabel
-    from PyQt6.QtCore import Qt
+def maze_linux_tag(text: str):
+    """The small "for Maze Linux" chip beside the app name (styled by QSS)."""
     tag = QLabel(text)
     tag.setObjectName("mazeLinuxTag")
     tag.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-    tag.setStyleSheet(f"font-size: {size_px}px; background: transparent;")
-    fade = QGraphicsOpacityEffect(tag)
-    fade.setOpacity(0.55)
-    tag.setGraphicsEffect(fade)
+    tag.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return tag

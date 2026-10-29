@@ -61,7 +61,14 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 
 ## Screenshots
 
-### OLED — Pure black, ambient glow
+Every theme is monochrome frosted glass over an animated backdrop — the blur is
+rendered inside the window, so it looks the same on every desktop. Colour is
+reserved for meaning: each privacy layer's icon, and the status title (green
+when protected, red when not). Icons: [Lucide](https://lucide.dev) (ISC) and
+[Simple Icons](https://simpleicons.org) (CC0) for the Tor logo — see
+`gui/icons/`. Tor and the onion logo are trademarks of The Tor Project.
+
+### OLED — Pure black, frosted glass
 
 <div align="center">
 <img src="screenshots/oled.png" alt="Entropy Shield OLED Theme - Tor Privacy GUI Linux" width="520" />
@@ -69,7 +76,7 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 
 <br/>
 
-### Light — Clean white panels
+### Light — White frosted glass
 
 <div align="center">
 <img src="screenshots/light.png" alt="Entropy Shield Light Theme" width="520" />
@@ -77,7 +84,7 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 
 <br/>
 
-### Binary — Hacker terminal with live binary rain
+### Binary — Black glass over live binary rain, monospace type
 
 <div align="center">
 <img src="screenshots/binary.png" alt="Entropy Shield Binary Theme" width="520" />
@@ -85,7 +92,7 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 
 <br/>
 
-### Circuit — PCB trace background, dark grey
+### Circuit — Black glass over PCB traces, CPU-chip status
 
 <div align="center">
 <img src="screenshots/circuit.png" alt="Entropy Shield Circuit Theme" width="520" />
@@ -93,7 +100,7 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 
 <br/>
 
-### Pixel — Retro pixel art, Minecraft-inspired monochrome
+### Pixel — Black glass, pixel blocks, Pixeled headings
 
 <div align="center">
 <img src="screenshots/pixel.png" alt="Entropy Shield Pixel Theme" width="520" />

@@ -307,7 +307,7 @@ pkg_arch() {
 
     step "Installing required packages (pacman)"
     install_critical pacman \
-        python python-pip python-pyqt6 \
+        python python-pip python-pyqt6 qt6-svg \
         tor nftables iptables-nft iproute2
 
     step "Installing optional packages (pacman)"
@@ -329,6 +329,7 @@ pkg_debian() {
     install_optional apt dnscrypt-proxy i2pd redsocks obfs4proxy conntrack dnsutils curl
 
     _install_pyqt6 apt python3-pyqt6
+    install_optional apt python3-pyqt6.qtsvg   # SVG icons
 }
 
 pkg_fedora() {
@@ -368,6 +369,7 @@ pkg_fedora() {
     }
 
     _install_pyqt6 dnf python3-qt6
+    install_optional dnf qt6-qtsvg              # SVG icons
 }
 
 pkg_opensuse() {
@@ -383,6 +385,7 @@ pkg_opensuse() {
     install_optional zypper dnscrypt-proxy i2pd redsocks obfs4proxy conntrack-tools bind-utils curl
 
     _install_pyqt6 zypper python3-qt6
+    install_optional zypper qt6-svg             # SVG icons
 }
 
 # Copy the application into $DEST as root-owned, user-read-only files.

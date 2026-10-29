@@ -1,6 +1,6 @@
 # Maintainer: Berk Kucuk <berkkucukk@proton.me>
 pkgname=entropy-shield
-pkgver=4.1.7
+pkgver=4.2.0
 pkgrel=1
 pkgdesc="Modern Linux desktop privacy stack — Tor, DNSCrypt, I2P, Onion Server — for Maze Linux"
 arch=('any')
@@ -10,6 +10,7 @@ install="$pkgname.install"
 depends=(
     'python>=3.10'
     'python-pyqt6'
+    'qt6-svg'
     'tor'
     'dnscrypt-proxy'
     'i2pd'

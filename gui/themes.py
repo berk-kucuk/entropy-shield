@@ -1,214 +1,110 @@
 from __future__ import annotations
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  All themes use a strictly monochrome palette (black · grey · white).
-#  Visual identity comes from corner radius, font, and background animation.
+#  Monochrome glass themes.
+#
+#  Black, white and grey — with exactly two exceptions: each privacy layer's
+#  icon carries its own colour, and the status title turns green when
+#  protected / red when not.  Every theme is a frosted
+#  glass UI over an animated backdrop; each glass panel shows a truly blurred
+#  copy of what lies behind it (see _GlowFrame / GlassPanel).  The blur is
+#  rendered inside the window, so it looks the same on every desktop and
+#  compositor.
+#
+#  Dark themes share the OLED black base and differ only in their signature
+#  backdrop effect, typeface and corner radius: OLED (plain), Binary (rain),
+#  Circuit (PCB traces), Pixel (pixel blocks).  States are told apart by tone,
+#  icon and wording rather than colour: protected = full white, connecting =
+#  mid grey, off = dim grey, error = white with an alert icon.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── glow palettes ─────────────────────────────────────────────────────────────
 
-_GLOW_OLED = {
-    "off":        (90,  90,  90),
-    "connecting": (170, 170, 170),
-    "on":         (220, 220, 220),
-    "error":      (210,  40,  40),
-}
-_GLOW_LIGHT = {
-    "off":        (150, 150, 150),
-    "connecting": (90,  90,  90),
-    "on":         (20,  20,  20),
-    "error":      (180,  30,  30),
-}
-_GLOW_BINARY = {
-    "off":        (80,  80,  80),
-    "connecting": (175, 175, 175),
-    "on":         (215, 215, 215),
-    "error":      (200,  40,  40),
-}
-_GLOW_CIRCUIT = {
-    "off":        (75,  75,  80),
-    "connecting": (155, 155, 160),
-    "on":         (205, 205, 210),
-    "error":      (195,  45,  45),
-}
-_GLOW_PIXEL = {
-    "off":        (80,  80,  80),
-    "connecting": (175, 175, 175),
-    "on":         (215, 215, 215),
-    "error":      (200,  40,  55),
-}
+def _hex(rgb) -> str:
+    return "#%02x%02x%02x" % tuple(rgb)
 
-# ── themes ────────────────────────────────────────────────────────────────────
 
-# Pure OLED black — smooth, elegant
-OLED: dict = {
-    "name":          "oled",
-    "bg":            "#000000",
-    "bg_rgb":        (0, 0, 0),
-    "frame_bg":      "#080808",
-    "card_bg":       "#101010",
-    "card_bg_h":     "#1a1a1a",
-    "border":        "rgba(255,255,255,0.10)",
-    "border_soft":   "rgba(255,255,255,0.05)",
-    "border_hover":  "rgba(255,255,255,0.45)",
-    "border_active": "rgba(230,230,230,0.80)",
-    "border_error":  "rgba(210,40,40,0.80)",
-    "text":          "#f2f2f2",
-    "text_muted":    "#888888",
-    "text_dim":      "#555555",
-    "green":         "#e8e8e8",
-    "blue":          "#aaaaaa",
-    "yellow":        "#c8c8c8",
-    "red":           "#f03c3c",
-    "log_fg":        "#606060",
-    "log_bg":        "#020202",
-    "scrollbar":     "rgba(255,255,255,0.08)",
-    "input_bg":      "rgba(255,255,255,0.04)",
-    "input_border":  "rgba(255,255,255,0.10)",
-    "tab_active":    "#e8e8e8",
-    "title_btn":     "rgba(255,255,255,0.04)",
-    "close_hover":   "#f03c3c",
-    "min_hover":     "#c8c8c8",
-    "section_bg":    "rgba(255,255,255,0.02)",
-    "radius":        18,
-    "glow":          _GLOW_OLED,
-}
+_DARK = dict(
+    dark=True,
+    bg_rgb=(6, 6, 6), bg2_rgb=(0, 0, 0),
+    aurora=[((255, 255, 255), 10), ((160, 160, 160), 9), ((255, 255, 255), 5)],
+    accent=(245, 245, 245), off_rgb=(115, 115, 115),
+    amber_rgb=(170, 170, 170), red_rgb=(255, 255, 255),
+    text="#f5f5f5", text_muted="#a3a3a3", text_dim="#5e5e5e",
+    glass=(255, 255, 255, 9), glass_strong=(17, 17, 17, 236),
+    glass_border=(255, 255, 255, 22), glass_hi=6, frost=150,
+    log_fg="#a8a8a8", input_bg="rgba(255,255,255,0.05)",
+    input_border="rgba(255,255,255,0.13)", scrollbar="rgba(255,255,255,0.15)",
+    on_accent="#000000",
+    status_ok=(34, 197, 94), status_bad=(239, 68, 68),
+    layers={
+        "tor":          (178, 128, 230),   # Tor purple
+        "dnscrypt":     (56, 189, 248),    # sky blue
+        "i2p":          (251, 191, 36),    # amber
+        "onion_server": (251, 113, 133),   # rose
+    },
+    font="'Inter','SF Pro Display','Segoe UI Variable','Segoe UI','Noto Sans',sans-serif",
+    font_px=13, radius=18, bw=1,
+)
 
-# Clean light — white panels, dark text
-LIGHT: dict = {
-    "name":          "light",
-    "bg":            "#ececec",
-    "bg_rgb":        (236, 236, 236),
-    "frame_bg":      "#f8f8f8",
-    "card_bg":       "#ffffff",
-    "card_bg_h":     "#ffffff",
-    "border":        "rgba(0,0,0,0.10)",
-    "border_soft":   "rgba(0,0,0,0.05)",
-    "border_hover":  "rgba(0,0,0,0.40)",
-    "border_active": "rgba(10,10,10,0.70)",
-    "border_error":  "rgba(180,30,30,0.65)",
-    "text":          "#0a0a0a",
-    "text_muted":    "#606060",
-    "text_dim":      "#b0b0b0",
-    "green":         "#111111",
-    "blue":          "#444444",
-    "yellow":        "#555555",
-    "red":           "#c02020",
-    "log_fg":        "#333333",
-    "log_bg":        "#ffffff",
-    "scrollbar":     "rgba(0,0,0,0.12)",
-    "input_bg":      "rgba(0,0,0,0.04)",
-    "input_border":  "rgba(0,0,0,0.12)",
-    "tab_active":    "#111111",
-    "title_btn":     "rgba(0,0,0,0.04)",
-    "close_hover":   "#c02020",
-    "min_hover":     "#444444",
-    "section_bg":    "rgba(0,0,0,0.02)",
-    "radius":        16,
-    "glow":          _GLOW_LIGHT,
-}
 
-# Hacker/terminal — pure black, monospace, white binary rain
-BINARY: dict = {
-    "name":          "binary",
-    "bg":            "#000000",
-    "bg_rgb":        (0, 0, 0),
-    "frame_bg":      "#070707",
-    "card_bg":       "#0d0d0d",
-    "card_bg_h":     "#161616",
-    "border":        "rgba(255,255,255,0.11)",
-    "border_soft":   "rgba(255,255,255,0.055)",
-    "border_hover":  "rgba(255,255,255,0.48)",
-    "border_active": "rgba(215,215,215,0.82)",
-    "border_error":  "rgba(200,40,40,0.82)",
-    "text":          "#e5e5e5",
-    "text_muted":    "#909090",
-    "text_dim":      "#565656",
-    "green":         "#e5e5e5",
-    "blue":          "#a0a0a0",
-    "yellow":        "#c0c0c0",
-    "red":           "#f03030",
-    "log_fg":        "#787878",
-    "log_bg":        "#000000",
-    "scrollbar":     "rgba(255,255,255,0.09)",
-    "input_bg":      "rgba(255,255,255,0.04)",
-    "input_border":  "rgba(255,255,255,0.11)",
-    "tab_active":    "#e5e5e5",
-    "title_btn":     "rgba(255,255,255,0.04)",
-    "close_hover":   "#f03030",
-    "min_hover":     "#c0c0c0",
-    "section_bg":    "rgba(255,255,255,0.025)",
-    "radius":        14,
-    "glow":          _GLOW_BINARY,
-}
+def _theme(**kw) -> dict:
+    """Fill in the derived/compatibility keys every theme shares."""
+    t = dict(kw)
+    t["accent2"] = t["accent"]
+    t["glow"] = {"off": t["off_rgb"], "connecting": t["amber_rgb"],
+                 "on": t["accent"], "error": t["red_rgb"]}
+    # Keys older code paths still read.
+    t["green"]  = _hex(t["accent"])
+    t["blue"]   = _hex(t["amber_rgb"])
+    t["yellow"] = _hex(t["amber_rgb"])
+    t["red"]    = _hex(t["red_rgb"])
+    t["bg"]     = _hex(t["bg_rgb"])
+    return t
 
-# PCB/circuit-board — very dark grey, circuit trace background, sharp corners
-CIRCUIT: dict = {
-    "name":          "circuit",
-    "bg":            "#05050a",
-    "bg_rgb":        (5, 5, 10),
-    "frame_bg":      "#0c0c14",
-    "card_bg":       "#111118",
-    "card_bg_h":     "#191920",
-    "border":        "rgba(200,200,210,0.10)",
-    "border_soft":   "rgba(200,200,210,0.05)",
-    "border_hover":  "rgba(220,220,230,0.45)",
-    "border_active": "rgba(210,210,220,0.80)",
-    "border_error":  "rgba(195,45,45,0.80)",
-    "text":          "#d8d8e0",
-    "text_muted":    "#888890",
-    "text_dim":      "#525260",
-    "green":         "#d0d0d8",
-    "blue":          "#9090a0",
-    "yellow":        "#b0b0b8",
-    "red":           "#e83838",
-    "log_fg":        "#585868",
-    "log_bg":        "#030308",
-    "scrollbar":     "rgba(200,200,210,0.08)",
-    "input_bg":      "rgba(200,200,210,0.04)",
-    "input_border":  "rgba(200,200,210,0.10)",
-    "tab_active":    "#d0d0d8",
-    "title_btn":     "rgba(200,200,210,0.04)",
-    "close_hover":   "#e83838",
-    "min_hover":     "#b0b0b8",
-    "section_bg":    "rgba(200,200,210,0.025)",
-    "radius":        14,
-    "glow":          _GLOW_CIRCUIT,
-}
 
-# Minecraft-like retro pixel — Pixeled font, chunky borders, dark grey bg
-PIXEL: dict = {
-    "name":          "pixel",
-    "bg":            "#0c0c0c",
-    "bg_rgb":        (12, 12, 12),
-    "frame_bg":      "#131313",
-    "card_bg":       "#1a1a1a",
-    "card_bg_h":     "#242424",
-    "border":        "rgba(255,255,255,0.18)",
-    "border_soft":   "rgba(255,255,255,0.07)",
-    "border_hover":  "rgba(255,255,255,0.60)",
-    "border_active": "rgba(235,235,235,0.88)",
-    "border_error":  "rgba(200,40,55,0.90)",
-    "text":          "#e8e8e8",
-    "text_muted":    "#999999",
-    "text_dim":      "#606060",
-    "green":         "#e8e8e8",
-    "blue":          "#bebebe",
-    "yellow":        "#d0d0d0",
-    "red":           "#ee3838",
-    "log_fg":        "#606060",
-    "log_bg":        "#0c0c0c",
-    "scrollbar":     "rgba(255,255,255,0.10)",
-    "input_bg":      "rgba(255,255,255,0.05)",
-    "input_border":  "rgba(255,255,255,0.18)",
-    "tab_active":    "#e8e8e8",
-    "title_btn":     "rgba(255,255,255,0.05)",
-    "close_hover":   "#ee3838",
-    "min_hover":     "#d0d0d0",
-    "section_bg":    "rgba(255,255,255,0.03)",
-    "radius":        12,
-    "glow":          _GLOW_PIXEL,
-}
+# OLED — pure black, plain frosted glass
+OLED = _theme(**{**_DARK, "name": "oled"})
+
+# Light — white/grey frosted glass, black accents
+LIGHT = _theme(
+    name="light", dark=False,
+    bg_rgb=(242, 242, 242), bg2_rgb=(228, 228, 228),
+    aurora=[((255, 255, 255), 170), ((160, 160, 160), 30), ((255, 255, 255), 120)],
+    accent=(12, 12, 12), off_rgb=(120, 120, 120),
+    amber_rgb=(100, 100, 100), red_rgb=(0, 0, 0),
+    text="#0a0a0a", text_muted="#525252", text_dim="#a3a3a3",
+    glass=(255, 255, 255, 150), glass_strong=(251, 251, 251, 242),
+    glass_border=(0, 0, 0, 22), glass_hi=0, frost=110,
+    log_fg="#3f3f3f", input_bg="rgba(255,255,255,0.7)",
+    input_border="rgba(0,0,0,0.13)", scrollbar="rgba(0,0,0,0.2)",
+    on_accent="#ffffff",
+    status_ok=(22, 163, 74), status_bad=(220, 38, 38),
+    layers={
+        "tor":          (125, 70, 152),
+        "dnscrypt":     (2, 132, 199),
+        "i2p":          (217, 119, 6),
+        "onion_server": (225, 29, 72),
+    },
+    font=_DARK["font"], font_px=13, radius=18, bw=1,
+)
+
+# Binary — OLED black with white binary rain, monospace type
+BINARY = _theme(**{**_DARK, "name": "binary", "radius": 12, "font_px": 12,
+                   "font": "'JetBrains Mono','Fira Code','Cascadia Code','DejaVu Sans Mono',monospace"})
+
+# Circuit — OLED black with grey PCB traces and a CPU-chip status
+CIRCUIT = _theme(**{**_DARK, "name": "circuit", "radius": 12})
+
+# Pixel — OLED black, square glass, drifting pixel blocks.  Pixeled is only
+# legible large: it sets the headings and buttons, while body text uses a
+# monospace face so descriptions and the log stay readable.
+PIXEL = _theme(**{**_DARK, "name": "pixel", "radius": 4, "bw": 2, "font_px": 12,
+                  "glass_border": (255, 255, 255, 36), "glass_hi": 0,
+                  "font": "'JetBrains Mono','Fira Code','DejaVu Sans Mono',monospace",
+                  "display_font": "'Pixeled','Press Start 2P','Courier New',monospace"})
+
+THEMES = {"oled": OLED, "light": LIGHT, "binary": BINARY,
+          "circuit": CIRCUIT, "pixel": PIXEL}
 
 # ── state ─────────────────────────────────────────────────────────────────────
 
@@ -221,393 +117,297 @@ def current() -> dict:
 
 def set_theme(name: str) -> None:
     global _current
-    _current = {
-        "oled":    OLED,
-        "dark":    OLED,    # legacy alias
-        "light":   LIGHT,
-        "binary":  BINARY,
-        "circuit": CIRCUIT,
-        "pixel":   PIXEL,
-    }.get(name, OLED)
+    _current = THEMES.get("oled" if name == "dark" else name, OLED)
+
+
+def rgba(rgb, a) -> str:
+    """CSS rgba() from an (r, g, b) tuple and an alpha in 0..255."""
+    r, g, b = rgb[:3]
+    return f"rgba({r},{g},{b},{a / 255:.3f})"
+
+
+def px(c: dict, n: float) -> str:
+    """Scale a font size designed for 13 px body text to this theme's typeface."""
+    return f"{max(6, round(n * c['font_px'] / 13))}px"
 
 
 # ── QSS builder ───────────────────────────────────────────────────────────────
 
+def _display_rules(c: dict) -> str:
+    """Headings/buttons in the theme's display face (pixel theme only)."""
+    face = c.get("display_font")
+    if not face:
+        return ""
+    sizes = {  # Pixeled renders roughly twice its nominal pixel size
+        "QLabel#appTitle": 8, "QLabel#statusTitle": 13, "QLabel#sectionTitle": 6,
+        "QLabel#layerName": 7, "QPushButton#connectBtn": 9, "QLabel#panelTitle": 10,
+        "QLabel#statusBadge": 6, "QLabel#statePill": 6, "QLabel#settingSection": 6,
+        "QPushButton#saveBtn": 7,
+    }
+    return "\n".join(f"{sel} {{{{ font-family: {face}; font-size: {n}px; letter-spacing: 0.5px; }}}}"
+                     .replace("{{", "{").replace("}}", "}")
+                     for sel, n in sizes.items())
+
+
 def build_qss(c: dict) -> str:
-    is_dark = c["name"] != "light"
-    r       = c.get("radius", 16)
-
-    if c["name"] == "oled":
-        connect_normal  = "rgba(6,6,6,0.98)"
-        connect_hover   = "rgba(255,255,255,0.09)"
-        connect_checked = "rgba(220,220,220,0.14)"
-        card_top        = "#0c0c0c"
-        card_top_h      = "#181818"
-    elif c["name"] == "binary":
-        connect_normal  = "rgba(0,0,0,0.98)"
-        connect_hover   = "rgba(255,255,255,0.09)"
-        connect_checked = "rgba(215,215,215,0.14)"
-        card_top        = "#080808"
-        card_top_h      = "#121212"
-    elif c["name"] == "circuit":
-        connect_normal  = "rgba(5,5,10,0.98)"
-        connect_hover   = "rgba(210,210,220,0.09)"
-        connect_checked = "rgba(200,200,210,0.14)"
-        card_top        = "#0e0e16"
-        card_top_h      = "#161620"
-    elif c["name"] == "pixel":
-        connect_normal  = "rgba(6,6,6,0.98)"
-        connect_hover   = "rgba(255,255,255,0.09)"
-        connect_checked = "rgba(230,230,230,0.14)"
-        card_top        = "#161616"
-        card_top_h      = "#202020"
-    else:  # light
-        connect_normal  = "rgba(245,245,245,0.95)"
-        connect_hover   = "rgba(0,0,0,0.08)"
-        connect_checked = "rgba(10,10,10,0.14)"
-        card_top        = "#ffffff"
-        card_top_h      = "#ffffff"
-
-    # Per-theme font
-    if c["name"] == "pixel":
-        font_family = "'Pixeled','Courier New','Lucida Console',monospace"
-        font_size   = "9px"
-    elif c["name"] == "binary":
-        font_family = "'JetBrains Mono','Fira Code','Cascadia Code','Courier New',monospace"
-        font_size   = "12px"
-    else:
-        font_family = "'Inter','SF Pro Display','Segoe UI','Noto Sans',sans-serif"
-        font_size   = "12px"
-
-    # Pixel theme uses thicker, blocky borders
-    bw  = "2px" if c["name"] == "pixel" else "1px"
-    bw2 = "2px" if c["name"] == "pixel" else "1.5px"
-
-    rr  = r                     # widget border-radius
-    rbtn = max(0, r - 6)        # button border-radius
-    rinp = max(0, r - 7)        # input border-radius
-
-    # Font size scaler: pixel theme scales all explicit sizes to ~5px base
-    _ps = 9 / 12 if c["name"] == "pixel" else 1.0
-    def pf(n: int) -> str:
-        return f"{max(5, round(n * _ps))}px"
+    dark   = c["dark"]
+    r      = c["radius"]
+    bw     = c["bw"]
+    acc    = c["accent"]
+    red    = c["red_rgb"]
+    border = rgba(c["glass_border"], c["glass_border"][3])
+    hover  = "rgba(255,255,255,0.07)" if dark else "rgba(0,0,0,0.05)"
+    press  = "rgba(255,255,255,0.11)" if dark else "rgba(0,0,0,0.08)"
+    ghost  = "rgba(255,255,255,0.05)" if dark else "rgba(255,255,255,0.55)"
+    on_acc = c["on_accent"]
+    rs     = max(2, r - 6)          # small radius (buttons, inputs)
+    rp     = min(8, max(2, r // 2))  # chips: must stay below half their height or Qt drops it
 
     return f"""
-/* ── global ── */
 * {{
-    font-family: {font_family};
-    font-size: {font_size};
+    font-family: {c['font']};
+    font-size: {px(c, 13)};
     outline: none;
-    box-sizing: border-box;
 }}
-QMainWindow {{ background: transparent; }}
-QWidget#outerBg {{ background: transparent; }}
-QWidget#glowFrame {{ background: transparent; }}
+QMainWindow, QWidget#outerBg, QWidget#glowFrame {{ background: transparent; }}
 QWidget {{ color: {c['text']}; background: transparent; }}
+QToolTip {{
+    background: {rgba(c['glass_strong'], 245)};
+    color: {c['text']};
+    border: 1px solid {border};
+    border-radius: {rs}px;
+    padding: 6px 8px;
+}}
 
 /* ── title bar ── */
-QWidget#appHeader {{
-    background: transparent;
-    border-bottom: 1px solid {c['border_soft']};
-}}
 QLabel#appTitle {{
-    font-size: {pf(13)};
-    font-weight: 800;
-    color: {c['text']};
-    letter-spacing: 6px;
-    background: transparent;
+    font-size: {px(c, 15)}; font-weight: 700;
+    letter-spacing: 0.4px; color: {c['text']};
 }}
-QLabel#logoLbl {{ background: transparent; border: none; }}
-
-/* title buttons */
-QPushButton#settingsBtn,
-QPushButton#quitBtn,
-QPushButton#minBtn {{
-    background: {c['title_btn']};
-    border: 1px solid {c['border']};
-    border-radius: 13px;
-    min-width: 28px; max-width: 28px;
-    min-height: 28px; max-height: 28px;
-    font-family: 'Inter','SF Pro Display','Segoe UI','Noto Sans',sans-serif;
-    font-size: {pf(13)};
-    padding: 0 0 1px 0;
-    color: {c['text_dim']};
+QLabel#mazeLinuxTag {{
+    font-size: {px(c, 10)}; font-weight: 600; color: {c['text_muted']};
+    background: {ghost}; border: 1px solid {border};
+    border-radius: {rp}px; padding: 2px 8px;
 }}
-QPushButton#minBtn:hover {{
-    background: rgba(180,180,180,0.13);
-    border-color: {c['min_hover']};
-    color: {c['min_hover']};
+QPushButton#iconBtn, QPushButton#settingsBtn {{
+    background: {ghost};
+    border: {bw}px solid {border};
+    border-radius: {min(15, r)}px;
+    min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px;
+    font-size: {px(c, 14)}; color: {c['text_muted']}; padding: 0 0 1px 0;
 }}
-QPushButton#settingsBtn:hover {{
-    background: rgba(180,180,180,0.10);
-    border-color: {c['blue']};
-    color: {c['blue']};
+QPushButton#iconBtn:hover, QPushButton#settingsBtn:hover {{
+    background: {hover}; color: {c['text']};
 }}
-QPushButton#quitBtn:hover {{
-    background: rgba(200,40,40,0.14);
-    border-color: {c['close_hover']};
-    color: {c['close_hover']};
+QPushButton#iconBtn[role="close"]:hover {{
+    background: {rgba(red, 50)}; border-color: {rgba(red, 160)}; color: {_hex(red)};
 }}
 QPushButton#panicBtn {{
-    background: rgba(180,30,30,0.22);
-    border: 1px solid rgba(210,55,48,0.55);
-    border-radius: 13px;
-    min-width: 28px; max-width: 28px;
-    min-height: 28px; max-height: 28px;
-    font-size: {pf(13)};
-    padding: 0 0 1px 0;
-    color: rgba(210,80,70,0.90);
+    background: transparent;
+    border: {bw}px solid {rgba(red, 90)};
+    border-radius: {min(15, r)}px;
+    min-height: 30px; max-height: 30px; padding: 0 12px;
+    font-size: {px(c, 11)}; font-weight: 700; letter-spacing: 0.6px;
+    color: {_hex(red)};
 }}
-QPushButton#panicBtn:hover {{
-    background: rgba(210,40,40,0.40);
-    border-color: rgba(255,80,70,0.90);
-    color: rgba(255,100,90,1.0);
-}}
+QPushButton#panicBtn:hover {{ background: {rgba(red, 30)}; border-color: {_hex(red)}; }}
 
-/* ── status ── */
+/* ── hero / status ── */
 QLabel#statusTitle {{
-    font-size: {pf(15)};
-    font-weight: 700;
-    letter-spacing: 5px;
-    background: transparent;
-    color: {c['text_muted']};
+    font-size: {px(c, 24)}; font-weight: 700; letter-spacing: 0.2px;
+    color: {c['text']};
 }}
-QLabel#statusSub {{
-    font-size: {pf(9)};
-    color: {c['text_muted']};
-    background: transparent;
-    letter-spacing: 3px;
+QLabel#statusTitle[state="on"]         {{ color: {_hex(c['status_ok'])}; }}
+QLabel#statusTitle[state="off"]        {{ color: {_hex(c['status_bad'])}; }}
+QLabel#statusTitle[state="error"]      {{ color: {_hex(c['status_bad'])}; }}
+QLabel#statusTitle[state="connecting"] {{ color: {c['text_muted']}; }}
+QLabel#statusSub {{ font-size: {px(c, 12)}; color: {c['text_muted']}; }}
+QLabel#statusBadge {{
+    font-size: {px(c, 10)}; font-weight: 700; letter-spacing: 1px;
+    color: {c['text_muted']}; background: {ghost};
+    border: 1px solid {border}; border-radius: {rp}px; padding: 3px 9px;
+}}
+QLabel#statusBadge[state="on"] {{
+    color: {_hex(acc)}; background: transparent; border-color: {rgba(acc, 70)};
+}}
+QLabel#statusBadge[state="connecting"] {{
+    color: {_hex(c['amber_rgb'])}; background: transparent;
+    border-color: {rgba(c['amber_rgb'], 90)};
+}}
+QLabel#statusBadge[state="error"] {{
+    color: {_hex(red)}; background: transparent; border-color: {rgba(red, 70)};
 }}
 
-/* ── service cards ── */
-QFrame#serviceCard {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-        stop:0 {card_top}, stop:1 {c['card_bg']});
-    border: {bw} solid {c['border']};
-    border-radius: {rr}px;
-}}
-QFrame#serviceCard:hover {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-        stop:0 {card_top_h}, stop:1 {c['card_bg_h']});
-    border-color: {c['border_hover']};
-}}
-QFrame#serviceCard[status="active"],
-QFrame#serviceCard[status="connecting"] {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-        stop:0 {card_top_h}, stop:1 {c['card_bg_h']});
-}}
-QLabel#cardTitle {{
-    font-size: {pf(10)}; font-weight: 800;
-    letter-spacing: 2px; background: transparent;
-}}
-QLabel#cardDesc  {{ font-size: {pf(9)}; color: {c['text_muted']}; background: transparent; }}
-QLabel#cardDot   {{ font-size: {pf(7)}; color: {c['text_dim']}; background: transparent; }}
-QLabel#cardDot[state="active"]     {{ color: {c['green']};  }}
-QLabel#cardDot[state="connecting"] {{ color: {c['yellow']}; }}
-QLabel#cardDot[state="error"]      {{ color: {c['red']};    }}
-QLabel#cardStatus {{
-    font-size: {pf(8)}; color: {c['text_dim']};
-    letter-spacing: 1px; background: transparent;
-}}
-QLabel#cardStatus[state="active"]     {{ color: {c['green']};  }}
-QLabel#cardStatus[state="connecting"] {{ color: {c['yellow']}; }}
-QLabel#cardStatus[state="error"]      {{ color: {c['red']};    }}
-QPushButton#gearBtn {{
-    background: transparent;
-    border: 1px solid {c['border_soft']};
-    border-radius: {max(0, rr - 8)}px;
-    color: {c['text_dim']}; font-size: {pf(10)}; padding: 0;
-    min-width: 20px; max-width: 20px;
-    min-height: 20px; max-height: 20px;
-}}
-QPushButton#gearBtn:hover {{
-    background: rgba(180,180,180,0.07);
+/* ── section headers inside panels ── */
+QLabel#sectionTitle {{
+    font-size: {px(c, 11)}; font-weight: 700; letter-spacing: 1.4px;
     color: {c['text_muted']};
-    border-color: {c['border_hover']};
 }}
+QLabel#sectionHint {{ font-size: {px(c, 11)}; color: {c['text_dim']}; }}
+
+/* ── layer rows ── */
+QFrame#layerRow {{ background: transparent; border-radius: {rs}px; }}
+QFrame#layerRow:hover {{ background: {hover}; }}
+QFrame#layerDivider {{ background: {rgba(c['glass_border'], c['glass_border'][3] // 2 + 6)}; }}
+QLabel#layerName {{ font-size: {px(c, 14)}; font-weight: 600; color: {c['text']}; }}
+QLabel#layerDesc {{ font-size: {px(c, 11)}; color: {c['text_muted']}; }}
+QLabel#statePill {{
+    font-size: {px(c, 10)}; font-weight: 700; letter-spacing: 0.8px;
+    color: {c['text_dim']}; background: transparent;
+    border: 1px solid {border}; border-radius: {rp}px; padding: 2px 8px;
+}}
+QLabel#statePill[state="active"] {{
+    color: {_hex(acc)}; background: transparent; border-color: {rgba(acc, 60)};
+}}
+QLabel#statePill[state="connecting"] {{
+    color: {_hex(c['amber_rgb'])}; background: transparent;
+    border-color: {rgba(c['amber_rgb'], 80)};
+}}
+QLabel#statePill[state="error"] {{
+    color: {_hex(red)}; background: transparent; border-color: {rgba(red, 70)};
+}}
+QPushButton#gearBtn {{
+    background: transparent; border: 1px solid transparent;
+    border-radius: {min(13, r)}px; color: {c['text_dim']};
+    font-size: {px(c, 14)}; padding: 0 0 1px 0;
+    min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px;
+}}
+QPushButton#gearBtn:hover {{ background: {hover}; border-color: {border}; color: {c['text']}; }}
 
 /* ── connect button ── */
 QPushButton#connectBtn {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-        stop:0 {connect_normal}, stop:1 {c['card_bg']});
-    border: {bw2} solid {c['border']};
-    border-radius: {rr}px;
-    font-size: {pf(11)}; font-weight: 800;
-    color: {c['text_muted']};
-    letter-spacing: 8px;
-    min-height: 52px;
+    background: {_hex(acc)};
+    border: none; border-radius: {r - 2 if r > 6 else r}px;
+    color: {on_acc}; font-size: {px(c, 15)}; font-weight: 700;
+    letter-spacing: 0.6px; min-height: 52px;
 }}
-QPushButton#connectBtn:hover:!checked {{
-    background: {connect_hover};
-    border-color: {c['blue']};
-    color: {c['blue']};
-}}
+QPushButton#connectBtn:hover {{ background: {rgba(acc, 225)}; }}
+QPushButton#connectBtn:pressed {{ background: {rgba(acc, 195)}; }}
 QPushButton#connectBtn:checked {{
-    background: {connect_checked};
-    border: {bw2} solid {c['border_active']};
-    color: {c['green']};
+    background: {ghost}; border: {bw}px solid {border}; color: {c['text']};
 }}
-QPushButton#connectBtn:disabled {{ opacity: 0.45; }}
-
-/* ── browser buttons ── */
-QPushButton#torBrowserBtn,
-QPushButton#i2pBrowserBtn,
-QPushButton#proxyTerminalBtn {{
-    background: {c['card_bg']};
-    border: {bw} solid {c['border']};
-    border-radius: {rr}px;
-    font-size: {pf(9)}; font-weight: 800;
-    color: {c['text_dim']};
-    letter-spacing: 3px;
-    min-height: 34px; padding: 0 14px;
+QPushButton#connectBtn:checked:hover {{
+    background: {rgba(red, 22)}; border-color: {rgba(red, 140)}; color: {_hex(red)};
 }}
-QPushButton#torBrowserBtn:enabled:hover {{
-    background: rgba(180,180,180,0.09);
-    border-color: {c['blue']};
-    color: {c['blue']};
+QPushButton#connectBtn:disabled {{
+    background: {ghost}; border: {bw}px solid {border}; color: {c['text_muted']};
 }}
-QPushButton#i2pBrowserBtn:enabled:hover {{
-    background: rgba(180,180,180,0.09);
-    border-color: {c['green']};
-    color: {c['green']};
-}}
-QPushButton#proxyTerminalBtn:enabled:hover {{
-    background: rgba(180,180,180,0.09);
-    border-color: {c['yellow']};
-    color: {c['yellow']};
-}}
-QPushButton#torBrowserBtn:disabled,
-QPushButton#i2pBrowserBtn:disabled,
-QPushButton#proxyTerminalBtn:disabled {{ opacity: 0.28; }}
 
 /* ── tool buttons ── */
 QPushButton#toolBtn {{
-    background: {c['title_btn']};
-    border: 1px solid {c['border']};
-    border-radius: {rinp}px;
-    color: {c['text_dim']}; font-size: {pf(8)}; font-weight: 700;
-    letter-spacing: 1px; min-height: 22px; padding: 0 8px;
+    background: {ghost};
+    border: {bw}px solid {border};
+    border-radius: {rs}px;
+    color: {c['text']}; font-size: {px(c, 12)}; font-weight: 600;
+    min-height: 38px; padding: 0 10px; text-align: center;
 }}
-QPushButton#toolBtn:enabled:hover {{
-    background: rgba(180,180,180,0.09);
-    border-color: {c['blue']}; color: {c['blue']};
+QPushButton#toolBtn:hover {{ background: {hover}; }}
+QPushButton#toolBtn:pressed {{ background: {press}; }}
+QPushButton#toolBtn:disabled {{ color: {c['text_dim']}; background: transparent; }}
+QPushButton#ghostBtn {{
+    background: transparent; border: 1px solid transparent;
+    border-radius: {rs}px; color: {c['text_muted']};
+    font-size: {px(c, 11)}; font-weight: 600; padding: 4px 9px;
 }}
-QPushButton#toolBtn:disabled {{ opacity: 0.25; }}
+QPushButton#ghostBtn:hover {{ background: {hover}; border-color: {border}; color: {c['text']}; }}
+QLabel#countBadge {{
+    font-size: {px(c, 10)}; font-weight: 700; color: {c['text_muted']};
+    background: {ghost}; border: 1px solid {border};
+    border-radius: {rp}px; padding: 1px 7px;
+}}
+QLabel#logPreview {{ font-size: {px(c, 11)}; color: {c['text_dim']}; }}
 
 /* ── log ── */
-QLabel#logLabel {{
-    font-size: {pf(8)}; font-weight: 700;
-    color: {c['text_dim']}; letter-spacing: 3px; background: transparent;
-}}
 QTextEdit#log {{
-    background-color: {c['log_bg']};
-    border: {bw} solid {c['border_soft']};
-    border-radius: {rr}px;
+    background: transparent; border: none;
     color: {c['log_fg']};
-    font-size: {pf(10)};
-    font-family: 'JetBrains Mono','Fira Code','Cascadia Code','Consolas',monospace;
-    padding: 8px 10px;
-    selection-background-color: {c['blue']};
+    font-family: 'JetBrains Mono','Fira Code','Cascadia Code','DejaVu Sans Mono',monospace;
+    font-size: {px(c, 11) if c['name'] != 'pixel' else '10px'};
+    padding: 0 2px;
+    selection-background-color: {rgba(acc, 90)};
 }}
 
 /* ── settings ── */
 QFrame#settingsCard {{
-    background-color: {c['frame_bg']};
-    border: {bw} solid {c['border']};
-    border-radius: {rr + 2}px;
+    background: {rgba(c['glass_strong'], c['glass_strong'][3])};
+    border: {bw}px solid {border};
+    border-radius: {r + 2}px;
 }}
-QLabel#panelTitle {{
-    font-size: {pf(11)}; font-weight: 800;
-    color: {c['text']}; letter-spacing: 5px;
-}}
+QLabel#panelTitle {{ font-size: {px(c, 18)}; font-weight: 700; color: {c['text']}; }}
 QLabel#settingSection {{
-    font-size: {pf(8)}; color: {c['text_dim']};
-    letter-spacing: 3px; font-weight: 700;
+    font-size: {px(c, 11)}; font-weight: 700; letter-spacing: 1.4px;
+    color: {_hex(acc)}; padding-top: 4px;
 }}
-QLabel#settingLabel {{ font-size: {pf(11)}; color: {c['text_muted']}; }}
+QLabel#settingLabel {{ font-size: {px(c, 12)}; color: {c['text_muted']}; }}
 QPushButton#saveBtn {{
-    background-color: {c['green']};
-    border: none; border-radius: {rbtn}px;
-    color: {"#000000" if is_dark else "#ffffff"};
-    font-size: {pf(11)}; font-weight: 700;
-    letter-spacing: 2px; min-height: 38px; padding: 0 20px;
+    background: {_hex(acc)};
+    border: none; border-radius: {rs}px; color: {on_acc};
+    font-size: {px(c, 13)}; font-weight: 700; min-height: 40px; padding: 0 22px;
 }}
-QPushButton#saveBtn:hover {{ border: 1px solid {c['green']}; }}
+QPushButton#saveBtn:hover {{ background: {rgba(acc, 225)}; }}
 QPushButton#closeBtn {{
-    background: transparent;
-    border: 1px solid {c['border']};
-    border-radius: {rbtn}px;
-    color: {c['text_muted']};
-    font-size: {pf(11)}; min-height: 38px; padding: 0 16px;
+    background: {ghost}; border: {bw}px solid {border};
+    border-radius: {rs}px; color: {c['text']};
+    font-size: {px(c, 12)}; min-height: 40px; padding: 0 16px;
 }}
-QPushButton#closeBtn:hover {{
-    border-color: {c['red']}; color: {c['red']};
-}}
+QPushButton#closeBtn:hover {{ background: {hover}; }}
 
 /* ── inputs ── */
-QSpinBox, QLineEdit {{
+QSpinBox, QLineEdit, QPlainTextEdit, QTextEdit#bridgeLines, QTableWidget {{
     background: {c['input_bg']};
-    border: {bw} solid {c['input_border']};
-    border-radius: {rinp}px;
-    color: {c['text']}; padding: 5px 10px;
-    min-height: 30px;
-    selection-background-color: {c['blue']};
+    border: {bw}px solid {c['input_border']};
+    border-radius: {rs}px;
+    color: {c['text']}; padding: 5px 10px; min-height: 22px;
+    selection-background-color: {rgba(acc, 110)};
 }}
-QSpinBox:focus, QLineEdit:focus {{ border-color: {c['blue']}; }}
-QSpinBox::up-button, QSpinBox::down-button {{
-    background: transparent; border: none; width: 16px;
+QSpinBox:focus, QLineEdit:focus, QPlainTextEdit:focus, QTextEdit#bridgeLines:focus {{ border-color: {rgba(acc, 200)}; }}
+QSpinBox::up-button, QSpinBox::down-button {{ background: transparent; border: none; width: 16px; }}
+QHeaderView::section {{
+    background: transparent; color: {c['text_muted']}; border: none;
+    border-bottom: 1px solid {c['input_border']}; padding: 4px 6px;
+    font-size: {px(c, 11)}; font-weight: 600;
 }}
-
-/* ── combo ── */
+QTableWidget {{ gridline-color: {c['input_border']}; padding: 2px; }}
 QComboBox {{
     background: {c['input_bg']};
-    border: {bw} solid {c['input_border']};
-    border-radius: {rinp}px;
-    color: {c['text']}; padding: 5px 10px;
-    min-height: 30px; min-width: 120px;
+    border: {bw}px solid {c['input_border']};
+    border-radius: {rs}px;
+    color: {c['text']}; padding: 5px 10px; min-height: 22px; min-width: 110px;
 }}
-QComboBox:focus {{ border-color: {c['blue']}; }}
-QComboBox::drop-down {{ border: none; width: 20px; }}
+QComboBox:focus {{ border-color: {rgba(acc, 200)}; }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
-    background: {c['frame_bg']};
-    border: 1px solid {c['border']};
-    border-radius: {rinp}px;
-    color: {c['text']};
-    selection-background-color: {c['blue']};
-    outline: none; padding: 4px;
+    background: {rgba(c['glass_strong'], 250)};
+    border: 1px solid {border}; border-radius: {rs}px;
+    color: {c['text']}; padding: 4px;
+    selection-background-color: {rgba(acc, 70)};
 }}
+QCheckBox {{ color: {c['text_muted']}; spacing: 8px; }}
 
-/* ── tabs ── */
-QTabWidget::pane {{
-    border: {bw} solid {c['border']};
-    border-radius: {rr}px;
-    background-color: {c['card_bg']};
-    top: -1px;
-}}
+/* ── tabs (settings) ── */
+QTabWidget::pane {{ border: none; background: transparent; top: 0; }}
+QTabBar {{ qproperty-drawBase: 0; }}
 QTabBar::tab {{
-    background: transparent; color: {c['text_dim']};
-    padding: 7px 12px; border: none;
-    font-size: {pf(8)}; letter-spacing: 2px; font-weight: 700;
+    background: transparent; color: {c['text_muted']};
+    padding: 6px 11px; margin: 0 2px 6px 0;
+    border: 1px solid transparent; border-radius: {rp}px;
+    font-size: {px(c, 11)}; font-weight: 600;
 }}
 QTabBar::tab:selected {{
-    color: {c['text']};
-    border-bottom: 2px solid {c['tab_active']};
+    color: {c['text']}; background: {hover}; border-color: {border};
 }}
-QTabBar::tab:hover:!selected {{ color: {c['text_muted']}; }}
+QTabBar::tab:hover:!selected {{ background: {hover}; color: {c['text']}; }}
+QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
 
+{_display_rules(c)}
 /* ── scrollbars ── */
-QScrollBar:vertical {{
-    background: transparent; width: 4px; border: none; margin: 0;
-}}
-QScrollBar::handle:vertical {{
-    background: {c['scrollbar']}; border-radius: 2px; min-height: 20px;
-}}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QScrollBar:horizontal {{
-    background: transparent; height: 4px; border: none;
-}}
-QScrollBar::handle:horizontal {{
-    background: {c['scrollbar']}; border-radius: 2px;
-}}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: {c['scrollbar']}; border-radius: 3px; min-height: 24px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ height: 0; background: none; }}
+QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: {c['scrollbar']}; border-radius: 3px; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ width: 0; background: none; }}
 """

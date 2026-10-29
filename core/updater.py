@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-VERSION = "4.1.7"
+VERSION = "4.2.0"
 _GITHUB_REPO = "berk-kucuk/entropy-shield"
 
 

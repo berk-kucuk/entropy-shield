@@ -6,13 +6,14 @@ from PyQt6.QtWidgets import (
     QApplication, QSizePolicy, QFileDialog, QMessageBox, QComboBox,
 )
 from PyQt6.QtCore import (
-    Qt, QRect, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
+    Qt, QRect, QRectF, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
     pyqtProperty,
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient
 
 from gui.themes import current as theme
-from gui.widgets import ToggleSwitch
+from gui.widgets import ToggleSwitch, paint_frost
+from gui import icons
 from core.config import cfg
 from core.daemon_client import DaemonClient, DaemonError
 import core.autostart as autostart
@@ -83,6 +84,7 @@ class SettingsPanel(QWidget):
         dest = self._card_rect()
         # Start the card off to the right (slide-in animation)
         self._card.setGeometry(self.width(), dest.y(), dest.width(), dest.height())
+        self._close_x.setIcon(icons.icon("x", theme()["text_muted"]))
         self._populate()
         self.show()
         self.raise_()
@@ -116,10 +118,13 @@ class SettingsPanel(QWidget):
         w.setFixedHeight(68)
         lay = QHBoxLayout(w)
         lay.setContentsMargins(20, 0, 16, 0)
-        title = QLabel("SETTINGS")
+        title = QLabel("Settings")
         title.setObjectName("panelTitle")
-        close = QPushButton("✕")
+        close = QPushButton()
         close.setObjectName("settingsBtn")
+        close.setIconSize(icons.qsize(16))
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_x = close
         close.clicked.connect(self.close_panel)
         lay.addWidget(title)
         lay.addStretch()
@@ -128,12 +133,12 @@ class SettingsPanel(QWidget):
 
     def _build_tabs(self) -> QTabWidget:
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._scrollable(self._tab_tor()),          "TOR")
-        self._tabs.addTab(self._scrollable(self._tab_dnscrypt()),     "DNSCRYPT")
+        self._tabs.addTab(self._scrollable(self._tab_tor()),          "Tor")
+        self._tabs.addTab(self._scrollable(self._tab_dnscrypt()),     "DNSCrypt")
         self._tabs.addTab(self._scrollable(self._tab_i2p()),          "I2P")
-        self._tabs.addTab(self._scrollable(self._tab_onion_server()), "ONION SERVER")
-        self._tabs.addTab(self._scrollable(self._tab_routing()),      "ROUTING")
-        self._tabs.addTab(self._scrollable(self._tab_general()),      "GENERAL")
+        self._tabs.addTab(self._scrollable(self._tab_onion_server()), "Onion")
+        self._tabs.addTab(self._scrollable(self._tab_routing()),      "Routing")
+        self._tabs.addTab(self._scrollable(self._tab_general()),      "General")
         return self._tabs
 
     def _build_footer(self) -> QWidget:
@@ -141,10 +146,10 @@ class SettingsPanel(QWidget):
         w.setFixedHeight(70)
         lay = QHBoxLayout(w)
         lay.setContentsMargins(20, 10, 20, 10)
-        save  = QPushButton("SAVE")
+        save  = QPushButton("Save changes")
         save.setObjectName("saveBtn")
         save.clicked.connect(self._on_save)
-        close = QPushButton("CANCEL")
+        close = QPushButton("Cancel")
         close.setObjectName("closeBtn")
         close.clicked.connect(self.close_panel)
         lay.addWidget(save)
@@ -172,9 +177,13 @@ class SettingsPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lbl = QLabel(label)
         lbl.setObjectName("settingLabel")
-        lbl.setFixedWidth(145)
-        lay.addWidget(lbl)
-        lay.addWidget(widget)
+        if widget.maximumWidth() < 16_777_215:     # fixed-width control → right-aligned
+            lay.addWidget(lbl, stretch=1)
+            lay.addWidget(widget)
+        else:                                      # free-width control fills the row
+            lbl.setFixedWidth(140)
+            lay.addWidget(lbl)
+            lay.addWidget(widget, stretch=1)
         return lay
 
     def _spinbox(self, lo: int = 1, hi: int = 65535) -> QSpinBox:
@@ -210,7 +219,7 @@ class SettingsPanel(QWidget):
             "(one bridge per line, from bridges.torproject.org)"
         )
         self._bridge_lines.setFixedHeight(80)
-        self._bridge_lines.setObjectName("log")
+        self._bridge_lines.setObjectName("bridgeLines")
 
         lay.addWidget(self._section("TOR NETWORK"))
         lay.addLayout(self._row("Trans Port", self._tor_trans))
@@ -638,15 +647,11 @@ class SettingsPanel(QWidget):
     # ── paint ─────────────────────────────────────────────────
 
     def paintEvent(self, _e) -> None:
-        p    = QPainter(self)
-        name = theme()["name"]
-        if name == "oled":
-            base = QColor(0, 0, 0, 220)
-        elif name == "light":
-            base = QColor(20, 20, 20, 130)
-        else:
-            base = QColor(10, 10, 10, 200)
-        p.fillRect(self.rect(), base)
+        # Frosted modal: the blurred window backdrop, dimmed, behind the card.
+        p = QPainter(self)
+        paint_frost(p, self, QRectF(self.rect()))
+        p.fillRect(self.rect(),
+                   QColor(0, 0, 0, 120) if theme()["dark"] else QColor(0, 0, 0, 70))
 
     def mousePressEvent(self, e) -> None:
         if not self._card.geometry().contains(e.pos()):
