@@ -339,6 +339,15 @@ QLabel#settingSection {{
     color: {_hex(acc)}; padding-top: 4px;
 }}
 QLabel#settingLabel {{ font-size: {px(c, 12)}; color: {c['text_muted']}; }}
+QLabel#settingValue {{ font-size: {px(c, 12)}; color: {c['text']}; font-weight: 600; }}
+QLabel#settingHint {{ font-size: {px(c, 11)}; color: {c['text_dim'] if dark else c['text_muted']}; }}
+QLabel#ruleName {{ font-size: {px(c, 13)}; color: {c['text']}; font-weight: 600; }}
+QLabel#formError {{ font-size: {px(c, 11)}; color: {c['text']}; font-weight: 700; }}
+QFrame#formCard, QFrame#ruleRow {{
+    background: {c['input_bg']};
+    border: {bw}px solid {c['input_border']};
+    border-radius: {rs}px;
+}}
 QPushButton#saveBtn {{
     background: {_hex(acc)};
     border: none; border-radius: {rs}px; color: {on_acc};
@@ -401,6 +410,11 @@ QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 
 {_display_rules(c)}
+/* ── keyboard focus: drawn by us, in the control's own shape ── */
+QPushButton:focus, QComboBox:focus, QLineEdit:focus, QSpinBox:focus {{
+    border-color: {c['text_muted']};
+}}
+
 /* ── scrollbars ── */
 QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {c['scrollbar']}; border-radius: 3px; min-height: 24px; }}

@@ -79,6 +79,10 @@ def main() -> None:
     start_hidden = "--tray" in sys.argv or "--minimized" in sys.argv
 
     app = QApplication(sys.argv)
+    # Fusion draws the same on every desktop.  Platform styles (KDE Breeze in
+    # particular) paint their own blue focus frame around buttons that ignores
+    # the stylesheet and does not follow the button's shape.
+    app.setStyle("Fusion")
     app.setApplicationName("Entropy Shield")
     # Keep running in the tray even when the main window is hidden/closed.
     app.setQuitOnLastWindowClosed(False)

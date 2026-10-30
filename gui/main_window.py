@@ -1122,6 +1122,7 @@ class MainWindow(QMainWindow):
                      self._card_i2p, self._card_onion):
             card.refresh_theme()
         self._refresh_icons()
+        self._rerender_log()
         if logo_path:
             self.setWindowIcon(_make_window_icon(logo_path))
         self._tray_send(f"icon:{logo_path}")
@@ -1157,6 +1158,8 @@ class MainWindow(QMainWindow):
         content.addWidget(self._build_log(), stretch=1)
         content.addStretch(0)   # takes the space when the log is collapsed
         self._refresh_icons()
+        for b in self._glow_frame.findChildren(QPushButton):
+            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
 
     def _build_status_area(self) -> QWidget:
         hero = GlassPanel()
@@ -1347,6 +1350,7 @@ class MainWindow(QMainWindow):
         self._log_widget.setMinimumHeight(80)
         self._log_lines = 0
         self._log_last = ""
+        self._log_entries: list[tuple[str, str]] = []
 
         col.addLayout(hdr)
         col.addWidget(self._log_widget, stretch=1)
@@ -2001,6 +2005,24 @@ class MainWindow(QMainWindow):
     _LOG_TAG = re.compile(r"^(\[[A-Z0-9 _>!-]+\])(.*)$", re.DOTALL)
 
     def _append_log(self, msg: str) -> None:
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        self._log_entries.append((ts, msg))
+        self._log_widget.append(self._format_log(ts, msg))
+        self._log_widget.moveCursor(QTextCursor.MoveOperation.End)
+
+        self._log_lines += 1
+        self._log_count.setText(str(self._log_lines))
+        self._log_last = msg.replace("\n", " ")
+        if self._log_preview.isVisible():
+            self._update_log_preview()
+
+    def _rerender_log(self) -> None:
+        """Re-colour every line for the current theme (after a theme change)."""
+        self._log_widget.setHtml("<br>".join(self._format_log(ts, m)
+                                             for ts, m in self._log_entries))
+        self._log_widget.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _format_log(self, ts: str, msg: str) -> str:
         c = theme()
         # Monochrome: problems are bright and bold, successes bright, the rest grey.
         upper = msg.upper()
@@ -2017,22 +2039,12 @@ class MainWindow(QMainWindow):
         m = self._LOG_TAG.match(msg)
         if m:
             tag, rest = m.group(1), m.group(2)
-        tag_col = c["text_muted"]
 
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        esc = lambda s: html.escape(s).replace("\n", "<br>")
-        line = (f'<span style="color:{c["text_dim"]}">{ts}</span>&nbsp;&nbsp;'
-                + (f'<span style="color:{tag_col};font-weight:600">{esc(tag)}</span>'
+        esc = lambda t: html.escape(t).replace("\n", "<br>")
+        return (f'<span style="color:{c["text_dim"]}">{ts}</span>&nbsp;&nbsp;'
+                + (f'<span style="color:{c["text_muted"]};font-weight:600">{esc(tag)}</span>'
                    if tag else "")
                 + f'<span style="color:{body};font-weight:{weight};white-space:pre-wrap">{esc(rest)}</span>')
-        self._log_widget.append(line)
-        self._log_widget.moveCursor(QTextCursor.MoveOperation.End)
-
-        self._log_lines += 1
-        self._log_count.setText(str(self._log_lines))
-        self._log_last = msg.replace("\n", " ")
-        if self._log_preview.isVisible():
-            self._update_log_preview()
 
     # ── system tray ───────────────────────────────────────────
 

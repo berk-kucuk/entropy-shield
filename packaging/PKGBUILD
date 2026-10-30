@@ -1,6 +1,6 @@
 # Maintainer: Berk Kucuk <berkkucukk@proton.me>
 pkgname=entropy-shield
-pkgver=4.2.0
+pkgver=4.2.1
 pkgrel=1
 pkgdesc="Modern Linux desktop privacy stack — Tor, DNSCrypt, I2P, Onion Server — for Maze Linux"
 arch=('any')

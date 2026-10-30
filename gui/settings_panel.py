@@ -1,15 +1,15 @@
 from __future__ import annotations
+import re
 
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QScrollArea,
     QPushButton, QLabel, QSpinBox, QLineEdit, QTabWidget,
-    QApplication, QSizePolicy, QFileDialog, QMessageBox, QComboBox,
+    QSizePolicy, QFileDialog, QMessageBox, QComboBox, QGridLayout,
 )
 from PyQt6.QtCore import (
-    Qt, QRect, QRectF, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
-    pyqtProperty,
+    Qt, QRect, QRectF, QPropertyAnimation, QEasingCurve, pyqtSignal,
 )
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient
+from PyQt6.QtGui import QPainter, QColor
 
 from gui.themes import current as theme
 from gui.widgets import ToggleSwitch, paint_frost
@@ -19,23 +19,44 @@ from core.daemon_client import DaemonClient, DaemonError
 import core.autostart as autostart
 
 
-def _daemon_status() -> str:
-    """Return a human-readable status of the root privileged daemon.
+def _daemon_status() -> tuple[str, str]:
+    """Return (short state, explanation) for the root privileged daemon.
 
-    Privileged operations no longer use pkexec/sudo; they go through a root
-    systemd daemon over a group-restricted Unix socket.  This is a read-only
-    indicator — there is no passwordless toggle to flip anymore.
+    Privileged operations go through a root systemd daemon over a
+    group-restricted Unix socket — a read-only indicator, nothing to toggle.
     """
     try:
         client = DaemonClient.connect(timeout=2.0)
         client.close()
-        return "Daemon: active ✓  (privileged ops run over the socket)"
+        return ("●  Running",
+                "Privileged operations run in the root entropy-shield service "
+                "over a group-restricted socket — no pkexec or sudoers entry.")
     except DaemonError as exc:
         if "group" in str(exc):
-            return ("Daemon: running, but you are NOT in the 'entropy-shield' "
-                    "group — log out and back in after installing.")
-        return ("Daemon: not running — start with "
-                "'sudo systemctl enable --now entropy-shield'.")
+            return ("●  No access",
+                    "The service is running, but your user is not in the "
+                    "'entropy-shield' group yet. Log out and back in after installing.")
+        return ("●  Not running",
+                "Start it with: sudo systemctl enable --now entropy-shield")
+
+
+_ROUTE_ACTIONS = [
+    ("tor",    "Through Tor"),
+    ("direct", "Direct — bypass Tor"),
+    ("block",  "Block all traffic"),
+]
+_USER_RE = re.compile(r"^(?:[0-9]{1,10}|[A-Za-z0-9_][A-Za-z0-9_.-]{0,31})$")
+
+
+def _local_users() -> list[tuple[str, int]]:
+    """Login accounts on this machine (uid ≥ 1000, real shell), for the picker."""
+    import pwd
+    out = []
+    for pw in pwd.getpwall():
+        if 1000 <= pw.pw_uid < 60000 and not pw.pw_shell.endswith(("nologin", "false")):
+            out.append((pw.pw_name, pw.pw_uid))
+    return sorted(out, key=lambda x: x[1])
+
 
 _MARGIN = 14   # equal margin on all four sides of the settings card
 
@@ -166,6 +187,14 @@ class SettingsPanel(QWidget):
         area.setFrameShape(QFrame.Shape.NoFrame)
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return area
+
+    def _hint(self, text: str) -> QLabel:
+        """Small explanatory text that wraps to the panel width."""
+        lbl = QLabel(text)
+        lbl.setObjectName("settingHint")
+        lbl.setWordWrap(True)
+        lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        return lbl
 
     def _section(self, text: str) -> QLabel:
         lbl = QLabel(text)
@@ -313,25 +342,19 @@ class SettingsPanel(QWidget):
         lay.addLayout(self._row("Local HTTP Port", self._onion_local_port))
         lay.addLayout(self._row("Onion Port", self._onion_hs_port))
 
-        note = QLabel(
-            "Starts a built-in HTTP file server on Local HTTP Port and\n"
-            "publishes it as a Tor hidden service (.onion).\n\n"
-            "Serve Directory: the folder whose contents will be visible\n"
-            "at your .onion address. Leave blank to use your home folder.\n\n"
-            "Enabling this automatically activates Tor. Your .onion\n"
-            "address is shown in the activity log after connecting."
-        )
-        note.setObjectName("settingLabel")
-        note.setWordWrap(True)
-        note.setStyleSheet("font-size:11px; opacity:0.7;")
         lay.addSpacing(6)
-        lay.addWidget(note)
+        for text in (
+            "Serves a folder over a built-in HTTP server and publishes it as a "
+            "Tor onion service. Turning this on also turns on Tor.",
+            "Leave the folder blank to share your Public folder. Your home "
+            "folder itself is never shared — it holds keys and passwords.",
+            "Your .onion address appears in the activity log after connecting.",
+        ):
+            lay.addWidget(self._hint(text))
         lay.addStretch()
         return w
 
     def _tab_routing(self) -> QWidget:
-        from PyQt6.QtWidgets import (QTableWidget, QTableWidgetItem,
-                                     QHeaderView, QComboBox)
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
@@ -339,61 +362,135 @@ class SettingsPanel(QWidget):
 
         self._routing_enabled = ToggleSwitch(checked=False)
         lay.addWidget(self._section("PER-APP ROUTING"))
-        lay.addLayout(self._row("Enable Rules", self._routing_enabled))
+        lay.addLayout(self._row("Enable rules", self._routing_enabled))
+        lay.addWidget(self._hint(
+            "Rules match the Linux user an app runs as. Give an app its own "
+            "user (for example: sudo -u steam steam) to route it separately. "
+            "Rules apply while Tor is connected."))
 
-        note_r = QLabel(
-            "Route specific apps directly (bypass Tor) or block them entirely.\n"
-            "Enter a Linux username or numeric UID.  Action:\n"
-            "  tor = route through Tor (default)\n"
-            "  direct = bypass Tor (clearnet)\n"
-            "  block = drop all traffic"
-        )
-        note_r.setObjectName("settingLabel")
-        note_r.setWordWrap(True)
-        note_r.setStyleSheet("font-size:11px; opacity:0.7;")
-        lay.addWidget(note_r)
+        # ── add-rule form ──────────────────────────────────────
+        lay.addSpacing(4)
+        lay.addWidget(self._section("ADD A RULE"))
+        form = QFrame()
+        form.setObjectName("formCard")
+        g = QGridLayout(form)
+        g.setContentsMargins(14, 14, 14, 14)
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(10)
 
-        self._routing_table = QTableWidget(0, 3)
-        self._routing_table.setHorizontalHeaderLabels(["App Name", "User / UID", "Action"])
-        self._routing_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch)
-        self._routing_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents)
-        self._routing_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents)
-        self._routing_table.setFixedHeight(140)
-        self._routing_table.setObjectName("log")
-        lay.addWidget(self._routing_table)
+        def _lbl(t: str) -> QLabel:
+            l = QLabel(t)
+            l.setObjectName("settingLabel")
+            return l
 
-        btn_row = QHBoxLayout()
-        add_btn = QPushButton("+ Add Rule")
-        add_btn.setObjectName("closeBtn")
+        self._rule_name = QLineEdit()
+        self._rule_name.setPlaceholderText("App name, e.g. Steam")
+
+        self._rule_user = QComboBox()
+        self._rule_user.setEditable(True)
+        self._rule_user.lineEdit().setPlaceholderText("username or UID")
+        for name, uid in _local_users():
+            self._rule_user.addItem(f"{name}  (uid {uid})", name)
+        self._rule_user.setCurrentIndex(-1)
+
+        self._rule_action = QComboBox()
+        for key, label in _ROUTE_ACTIONS:
+            self._rule_action.addItem(label, key)
+
+        self._rule_error = QLabel("")
+        self._rule_error.setObjectName("formError")
+        self._rule_error.setWordWrap(True)
+        self._rule_error.hide()
+
+        add_btn = QPushButton("Add rule")
+        add_btn.setObjectName("saveBtn")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self._add_routing_rule)
-        del_btn = QPushButton("− Remove")
-        del_btn.setObjectName("closeBtn")
-        del_btn.clicked.connect(self._del_routing_rule)
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(del_btn)
-        btn_row.addStretch()
-        lay.addLayout(btn_row)
+
+        g.addWidget(_lbl("App"),     0, 0)
+        g.addWidget(self._rule_name, 0, 1)
+        g.addWidget(_lbl("Runs as"), 1, 0)
+        g.addWidget(self._rule_user, 1, 1)
+        g.addWidget(_lbl("Traffic"), 2, 0)
+        g.addWidget(self._rule_action, 2, 1)
+        g.addWidget(self._rule_error, 3, 0, 1, 2)
+        g.addWidget(add_btn, 4, 1, alignment=Qt.AlignmentFlag.AlignRight)
+        g.setColumnStretch(1, 1)
+        lay.addWidget(form)
+
+        # ── rule list ──────────────────────────────────────────
+        lay.addSpacing(4)
+        lay.addWidget(self._section("RULES"))
+        self._rules_box = QVBoxLayout()
+        self._rules_box.setSpacing(6)
+        lay.addLayout(self._rules_box)
+        self._routing_rules: list[dict] = []
+        self._render_rules()
         lay.addStretch()
         return w
 
-    def _add_routing_rule(self) -> None:
-        from PyQt6.QtWidgets import QComboBox, QTableWidgetItem
-        row = self._routing_table.rowCount()
-        self._routing_table.insertRow(row)
-        self._routing_table.setItem(row, 0, QTableWidgetItem("AppName"))
-        self._routing_table.setItem(row, 1, QTableWidgetItem("username"))
-        combo = QComboBox()
-        combo.addItems(["tor", "direct", "block"])
-        self._routing_table.setCellWidget(row, 2, combo)
+    def _rule_user_value(self) -> str:
+        cb = self._rule_user
+        text = cb.currentText().strip()
+        i = cb.findText(text)
+        return cb.itemData(i) if i >= 0 and cb.itemData(i) else text
 
-    def _del_routing_rule(self) -> None:
-        rows = sorted(set(i.row() for i in self._routing_table.selectedItems()),
-                      reverse=True)
-        for r in rows:
-            self._routing_table.removeRow(r)
+    def _add_routing_rule(self) -> None:
+        who = self._rule_user_value()
+        if not _USER_RE.match(who):
+            self._rule_error.setText(
+                "Choose a user from the list, or type a username / numeric UID.")
+            self._rule_error.show()
+            return
+        self._rule_error.hide()
+        name = self._rule_name.text().strip() or who
+        action = self._rule_action.currentData()
+        # one rule per user — a newer rule replaces the old one
+        self._routing_rules = [r for r in self._routing_rules if r["uid_or_user"] != who]
+        self._routing_rules.append({"name": name[:64], "uid_or_user": who, "action": action})
+        self._rule_name.clear()
+        self._rule_user.setCurrentIndex(-1)
+        self._rule_user.clearEditText()
+        self._render_rules()
+
+    def _remove_routing_rule(self, who: str) -> None:
+        self._routing_rules = [r for r in self._routing_rules if r["uid_or_user"] != who]
+        self._render_rules()
+
+    def _render_rules(self) -> None:
+        while self._rules_box.count():
+            item = self._rules_box.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not self._routing_rules:
+            self._rules_box.addWidget(self._hint(
+                "No rules yet — every app follows the active privacy layers."))
+            return
+        labels = dict(_ROUTE_ACTIONS)
+        for rule in self._routing_rules:
+            row = QFrame()
+            row.setObjectName("ruleRow")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(12, 8, 8, 8)
+            h.setSpacing(10)
+            text = QVBoxLayout()
+            text.setSpacing(2)
+            name = QLabel(rule["name"])
+            name.setObjectName("ruleName")
+            sub = QLabel(f"{rule['uid_or_user']}  ·  {labels.get(rule['action'], rule['action'])}")
+            sub.setObjectName("settingHint")
+            text.addWidget(name)
+            text.addWidget(sub)
+            h.addLayout(text, stretch=1)
+            rm = QPushButton()
+            rm.setObjectName("iconBtn")
+            rm.setIcon(icons.icon("x", theme()["text_muted"]))
+            rm.setIconSize(icons.qsize(14))
+            rm.setToolTip("Remove rule")
+            rm.setCursor(Qt.CursorShape.PointingHandCursor)
+            rm.clicked.connect(lambda _=False, who=rule["uid_or_user"]: self._remove_routing_rule(who))
+            h.addWidget(rm, alignment=Qt.AlignmentFlag.AlignVCenter)
+            self._rules_box.addWidget(row)
 
     def _browse_serve_dir(self) -> None:
         current = self._onion_serve_dir.text().strip() or ""
@@ -425,10 +522,20 @@ class SettingsPanel(QWidget):
         self._mac_toggle            = ToggleSwitch(checked=False)
         self._doh_block_toggle      = ToggleSwitch(checked=True)
 
-        self._auth_btn = QPushButton()
-        self._auth_btn.setObjectName("closeBtn")
-        self._auth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._auth_btn.clicked.connect(self._on_auth_toggled)
+        self._daemon_state = QLabel()
+        self._daemon_state.setObjectName("settingValue")
+        recheck = QPushButton("Re-check")
+        recheck.setObjectName("ghostBtn")
+        recheck.setCursor(Qt.CursorShape.PointingHandCursor)
+        recheck.clicked.connect(self._on_auth_toggled)
+        daemon_box = QWidget()
+        db = QHBoxLayout(daemon_box)
+        db.setContentsMargins(0, 0, 0, 0)
+        db.setSpacing(6)
+        db.addWidget(self._daemon_state)
+        db.addWidget(recheck)
+        daemon_box.setMaximumWidth(daemon_box.sizeHint().width() + 120)
+        self._daemon_detail = self._hint("")
         self._refresh_auth_btn()
 
         lay.addWidget(self._section("APPEARANCE"))
@@ -448,35 +555,28 @@ class SettingsPanel(QWidget):
         lay.addLayout(self._row("Block DoH",        self._doh_block_toggle))
         lay.addSpacing(8)
         lay.addWidget(self._section("PRIVILEGE"))
-        lay.addLayout(self._row("Daemon", self._auth_btn))
+        lay.addLayout(self._row("Service", daemon_box))
+        lay.addWidget(self._daemon_detail)
 
-        note = QLabel(
-            "Kill Switch: if a privacy service drops, emergency disconnect.\n\n"
-            "Auto-Reconnect: after a kill-switch event, automatically\n"
-            "reconnect after the configured delay.\n\n"
-            "Update Check: check GitHub Releases for a newer version\n"
-            "once per session (no telemetry, HTTPS only).\n\n"
-            "Circuit Renewal: automatically request a new Tor identity every\n"
-            "N minutes (0 = disabled). Sends a desktop notification on renewal.\n\n"
-            "MAC Randomize: randomize interface MAC address on connect,\n"
-            "restore on disconnect. Requires iproute2.\n\n"
-            "Block DoH: block DNS-over-HTTPS to known resolvers in DNSCrypt\n"
-            "mode so apps cannot bypass dnscrypt-proxy (port 443 drops).\n\n"
-            "Daemon: privileged operations run through a root systemd service\n"
-            "(entropy-shield) over a group-restricted Unix socket — no pkexec or\n"
-            "sudoers entry. Your user must be in the 'entropy-shield' group.\n"
-            "Click the status to re-check."
-        )
-        note.setObjectName("settingLabel")
-        note.setWordWrap(True)
-        note.setStyleSheet("font-size:11px; opacity:0.7;")
         lay.addSpacing(6)
-        lay.addWidget(note)
+        lay.addWidget(self._section("ABOUT THESE OPTIONS"))
+        for text in (
+            "Kill Switch — if a privacy service drops, disconnect everything at once.",
+            "Auto-Reconnect — after a kill-switch event, reconnect after the delay.",
+            "Update Check — once per session, through Tor, after the first Tor connect.",
+            "Circuit Renewal — request a new Tor identity every N minutes (0 = off).",
+            "MAC Randomize — random interface MAC on connect, restored on disconnect.",
+            "Block DoH — in DNSCrypt-only mode, block DNS-over-HTTPS/TLS/QUIC so "
+            "apps cannot bypass dnscrypt-proxy.",
+        ):
+            lay.addWidget(self._hint(text))
         lay.addStretch()
         return w
 
     def _refresh_auth_btn(self) -> None:
-        self._auth_btn.setText(_daemon_status())
+        state, detail = _daemon_status()
+        self._daemon_state.setText(state)
+        self._daemon_detail.setText(detail)
 
     def _on_auth_toggled(self) -> None:
         # Read-only indicator: clicking just re-checks the daemon status.
@@ -485,7 +585,6 @@ class SettingsPanel(QWidget):
     # ── populate / save ───────────────────────────────────────
 
     def _populate(self) -> None:
-        from PyQt6.QtWidgets import QComboBox, QTableWidgetItem
         self._tor_trans.setValue(cfg().get("tor", "trans_port"))
         self._tor_dns.setValue(cfg().get("tor", "dns_port"))
         self._tor_socks.setValue(cfg().get("tor", "socks_port"))
@@ -513,21 +612,12 @@ class SettingsPanel(QWidget):
         self._onion_local_port.setValue(cfg().get("onion_server", "local_port"))
         self._onion_hs_port.setValue(cfg().get("onion_server", "hs_port"))
 
-        # Routing table
-        self._routing_enabled.setChecked(
-            cfg().get("per_app_routing").get("enabled", False), silent=True)
-        self._routing_table.setRowCount(0)
-        for rule in cfg().get("per_app_routing").get("rules", []):
-            from PyQt6.QtWidgets import QComboBox
-            row = self._routing_table.rowCount()
-            self._routing_table.insertRow(row)
-            self._routing_table.setItem(row, 0, QTableWidgetItem(rule.get("name", "")))
-            self._routing_table.setItem(row, 1, QTableWidgetItem(str(rule.get("uid_or_user", ""))))
-            combo = QComboBox()
-            combo.addItems(["tor", "direct", "block"])
-            action = rule.get("action", "tor")
-            combo.setCurrentIndex({"tor": 0, "direct": 1, "block": 2}.get(action, 0))
-            self._routing_table.setCellWidget(row, 2, combo)
+        # Routing rules
+        par = cfg().get("per_app_routing")
+        self._routing_enabled.setChecked(par.get("enabled", False), silent=True)
+        self._routing_rules = [dict(r) for r in par.get("rules", [])]
+        self._rule_error.hide()
+        self._render_rules()
 
         theme_map = {"oled": 0, "dark": 0, "light": 1, "binary": 2, "circuit": 3, "pixel": 4}
         self._theme_combo.setCurrentIndex(theme_map.get(cfg().get("theme"), 0))
@@ -594,17 +684,7 @@ class SettingsPanel(QWidget):
         cfg().set("bridges", "lines",     bridge_lines)
 
         # Per-app routing
-        rules = []
-        for row in range(self._routing_table.rowCount()):
-            name_item = self._routing_table.item(row, 0)
-            uid_item  = self._routing_table.item(row, 1)
-            combo     = self._routing_table.cellWidget(row, 2)
-            if name_item and uid_item and combo:
-                rules.append({
-                    "name":         name_item.text().strip(),
-                    "uid_or_user":  uid_item.text().strip(),
-                    "action":       combo.currentText(),
-                })
+        rules = [dict(r) for r in self._routing_rules]
         cfg().set("per_app_routing", "enabled", self._routing_enabled.isChecked())
         cfg().set("per_app_routing", "rules",   rules)
 
