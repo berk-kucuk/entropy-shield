@@ -32,6 +32,8 @@ from gui.widgets import (
     GlassPanel, LayerRow, Spinner, StatusRing, NetSpeedGraph, set_backdrop,
 )
 from gui.settings_panel import SettingsPanel
+from gui.torify_panel import RunAppDialog, TorifyPanel
+from core.torify import apps as torify_apps
 from core.config import cfg, cfg_port
 from core.updater import VERSION
 import core.browser as browser
@@ -1155,6 +1157,8 @@ class MainWindow(QMainWindow):
         content.addWidget(self._build_cards())
         content.addWidget(self._build_connect_row())
         content.addWidget(self._build_browser_row())
+        self._torify_panel = TorifyPanel(self._append_log)
+        content.addWidget(self._torify_panel)
         content.addWidget(self._build_log(), stretch=1)
         content.addStretch(0)   # takes the space when the log is collapsed
         self._refresh_icons()
@@ -1274,18 +1278,20 @@ class MainWindow(QMainWindow):
 
         self._tor_browser_btn = self._tool_button(
             "Tor Browser",
-            "Isolated, hardened browser profile routed through Tor.\n"
-            "Supports Firefox, Chromium, Brave.", self._on_open_tor_browser,
-            "brand-torbrowser")
+            "A fresh browser that can only reach the internet through Tor —\n"
+            "works without connecting, and has no network if Tor stops.\n"
+            "Firefox, LibreWolf, Chromium, Brave.", self._on_open_tor_browser,
+            "brand-torbrowser", enabled=True)
         self._i2p_browser_btn = self._tool_button(
             "I2P Browser",
             "Isolated browser profile routed through I2P.\n"
             "Supports Firefox, Chromium, Brave.", self._on_open_i2p_browser, "globe")
         self._proxy_terminal_btn = self._tool_button(
             "Terminal",
-            "Open a terminal with Tor proxy variables pre-set.\n"
-            "curl http://abc.onion works there. No system files are changed.",
-            self._on_open_proxy_terminal, "square-terminal")
+            "A terminal in which every command reaches the internet only\n"
+            "through Tor (curl, git, ssh, …). .onion addresses work.\n"
+            "Works without connecting.",
+            self._on_open_proxy_terminal, "square-terminal", enabled=True)
         self._ip_check_btn = self._tool_button(
             "IP Check", "Show your public IP as seen through Tor (needs curl).",
             self._on_ip_check, "map-pin")
@@ -1303,6 +1309,12 @@ class MainWindow(QMainWindow):
                            self._new_circuit_btn, self._leak_test_btn)
         for i, b in enumerate(self._tool_btns):
             grid.addWidget(b, i // 3, i % 3)
+        self._run_app_btn = self._tool_button(
+            "Run any app through Tor…",
+            "Pick an installed app. It runs with no network of its own:\n"
+            "everything goes through Tor, on a circuit of its own, or nowhere.",
+            self._on_run_app, "waypoints", enabled=True)
+        grid.addWidget(self._run_app_btn, 2, 0, 1, 3)
         return panel
 
     def _build_log(self) -> QWidget:
@@ -1534,9 +1546,7 @@ class MainWindow(QMainWindow):
             for card in self._active_cards():
                 card.set_status("active")
             tor_on = "tor" in self._active_layers
-            self._tor_browser_btn.setEnabled(tor_on)
             self._i2p_browser_btn.setEnabled("i2p" in self._active_layers)
-            self._proxy_terminal_btn.setEnabled(tor_on)
             self._ip_check_btn.setEnabled(tor_on)
             self._new_circuit_btn.setEnabled(tor_on)
             self._leak_test_btn.setEnabled(True)
@@ -1594,9 +1604,7 @@ class MainWindow(QMainWindow):
             for card in (self._card_tor, self._card_dns,
                          self._card_i2p, self._card_onion):
                 card.set_status("")
-            self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
-            self._proxy_terminal_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
             self._new_circuit_btn.setEnabled(False)
             self._leak_test_btn.setEnabled(False)
@@ -1614,9 +1622,7 @@ class MainWindow(QMainWindow):
             for card in (self._card_tor, self._card_dns,
                          self._card_i2p, self._card_onion):
                 card.set_status("error" if card.is_checked else "")
-            self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
-            self._proxy_terminal_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
             self._new_circuit_btn.setEnabled(False)
             self._leak_test_btn.setEnabled(False)
@@ -1664,9 +1670,7 @@ class MainWindow(QMainWindow):
             for card in (self._card_tor, self._card_dns,
                          self._card_i2p, self._card_onion):
                 card.set_status("")
-            self._tor_browser_btn.setEnabled(False)
             self._i2p_browser_btn.setEnabled(False)
-            self._proxy_terminal_btn.setEnabled(False)
             self._ip_check_btn.setEnabled(False)
             self._new_circuit_btn.setEnabled(False)
             self._leak_test_btn.setEnabled(False)
@@ -1847,9 +1851,7 @@ class MainWindow(QMainWindow):
         for card in (self._card_tor, self._card_dns,
                      self._card_i2p, self._card_onion):
             card.set_status("")
-        self._tor_browser_btn.setEnabled(False)
         self._i2p_browser_btn.setEnabled(False)
-        self._proxy_terminal_btn.setEnabled(False)
         self._ip_check_btn.setEnabled(False)
         self._new_circuit_btn.setEnabled(False)
         self._leak_test_btn.setEnabled(False)
@@ -1956,14 +1958,20 @@ class MainWindow(QMainWindow):
     # ── browsers ──────────────────────────────────────────────
 
     def _on_open_tor_browser(self) -> None:
+        cmd = torify_apps.browser_command()
+        if cmd is None:
+            self._append_log("[BROWSER] No supported browser found "
+                             "(Firefox, LibreWolf, Chromium, Brave).")
+            return
         self._tor_browser_btn.setEnabled(False)
-        try:
-            browser.launch_tor(cfg_port("tor", "socks_port"), self._append_log)
-        except Exception as exc:
-            self._append_log(f"[BROWSER] {exc}")
-        finally:
-            QTimer.singleShot(3000, lambda: self._tor_browser_btn.setEnabled(
-                self._connected and "tor" in self._active_layers))
+        torify_apps.spawn(["--name", "Tor Browser", "--", *cmd])
+        self._append_log("[BROWSER] Opening a fresh browser that can only reach "
+                         "the internet through Tor…")
+        QTimer.singleShot(3000, lambda: self._tor_browser_btn.setEnabled(True))
+
+    def _on_run_app(self) -> None:
+        RunAppDialog(self).exec()
+        QTimer.singleShot(4000, self._torify_panel.refresh)
 
     def _on_open_i2p_browser(self) -> None:
         self._i2p_browser_btn.setEnabled(False)
@@ -1980,15 +1988,16 @@ class MainWindow(QMainWindow):
                 self._connected and "i2p" in self._active_layers))
 
     def _on_open_proxy_terminal(self) -> None:
+        cmd = torify_apps.terminal_command()
+        if cmd is None:
+            self._append_log("[TERMINAL] No suitable terminal found (Konsole, "
+                             "Alacritty, kitty, foot or xterm).")
+            return
         self._proxy_terminal_btn.setEnabled(False)
-        try:
-            browser.launch_proxy_terminal(
-                cfg_port("tor", "socks_port"), self._append_log)
-        except Exception as exc:
-            self._append_log(f"[TERMINAL] {exc}")
-        finally:
-            QTimer.singleShot(3000, lambda: self._proxy_terminal_btn.setEnabled(
-                self._connected and "tor" in self._active_layers))
+        torify_apps.spawn(["--name", "Tor Terminal", "--", *cmd])
+        self._append_log("[TERMINAL] Opening a terminal whose commands reach the "
+                         "internet only through Tor…")
+        QTimer.singleShot(3000, lambda: self._proxy_terminal_btn.setEnabled(True))
 
     # ── helpers ───────────────────────────────────────────────
 

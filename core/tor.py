@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import pwd
 import re
 import subprocess
 import shutil
@@ -13,6 +14,11 @@ from .platform import is_nixos
 _RUN_DIR  = "/run/entropy-shield"
 _TORRC_PATH = "/run/entropy-shield/torrc"
 _DATA_DIR = "/run/entropy-shield/tor-data"
+# A second SocksPort, on a Unix socket, for apps run through Tor
+# (core/torify): an app's network namespace has its own loopback and cannot
+# reach 127.0.0.1 here, but it can reach a filesystem path. The directory is
+# tor:entropy-shield 0750, so only users allowed to use Entropy Shield get in.
+_SOCKS_UNIX_DIR = "/run/entropy-shield/tor-socks"
 
 # Exported so onion_server.py can append HiddenService config to our torrc.
 TORRC = _TORRC_PATH
@@ -50,6 +56,7 @@ AutomapHostsSuffixes .onion,.exit
 TransPort   127.0.0.1:{trans_port}
 DNSPort     127.0.0.1:{dns_port}
 SocksPort   127.0.0.1:{socks_port} IsolateDestAddr IsolateDestPort
+{socks_unix_line}
 ControlPort 127.0.0.1:{control_port}
 CookieAuthentication 1
 CookieAuthFile {data_dir}/control_auth_cookie
@@ -112,6 +119,7 @@ class TorManager:
 
         # ── bridge / pluggable transport ─────────────────────────
         bridge_section = self._build_bridge_section()
+        socks_unix_line = self._prepare_socks_unix_dir(tor_user)
 
         content = _TORRC_TEMPLATE.format(
             data_dir       = _DATA_DIR,
@@ -128,6 +136,7 @@ class TorManager:
             exit_line      = f"ExitNodes {exits}" if exits else "",
             strict_line    = "StrictNodes 1" if strict else "",
             bridge_section = bridge_section,
+            socks_unix_line = socks_unix_line,
         )
 
         # The torrc holds the user's bridge lines, which are exactly the thing a
@@ -245,6 +254,27 @@ class TorManager:
         self._log("[TOR] Tor stopped.")
 
     # ── bridge / pluggable transport ──────────────────────────────
+
+    def _prepare_socks_unix_dir(self, tor_user: str | None) -> str:
+        """Create the directory for the Unix SocksPort; return its torrc line.
+
+        Any failure returns "" — apps run through Tor then start their own
+        private Tor instead, and the system-wide session is unaffected.
+        """
+        import grp
+        try:
+            os.makedirs(_SOCKS_UNIX_DIR, mode=0o750, exist_ok=True)
+            uid = pwd.getpwnam(tor_user).pw_uid if tor_user else 0
+            gid = grp.getgrnam("entropy-shield").gr_gid
+            os.chown(_SOCKS_UNIX_DIR, uid, gid)
+            os.chmod(_SOCKS_UNIX_DIR, 0o750)
+        except (OSError, KeyError) as exc:
+            self._log(f"[TOR] Apps-through-Tor socket unavailable: {exc}")
+            return ""
+        # WorldWritable on the socket; the 0750 directory is the real gate.
+        # RelaxDirModeCheck: Tor otherwise refuses a group-readable directory.
+        return (f"SocksPort unix:{_SOCKS_UNIX_DIR}/socks.sock "
+                "WorldWritable RelaxDirModeCheck IsolateSOCKSAuth")
 
     def _build_bridge_section(self) -> str:
         """Return torrc lines for bridge/pluggable-transport support."""

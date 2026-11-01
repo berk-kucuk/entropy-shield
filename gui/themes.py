@@ -377,6 +377,16 @@ QHeaderView::section {{
     font-size: {px(c, 11)}; font-weight: 600;
 }}
 QTableWidget {{ gridline-color: {c['input_border']}; padding: 2px; }}
+
+/* ── run an app through Tor ── */
+QDialog#torifyDialog {{ background: {c['bg']}; }}
+QListWidget#appList {{
+    background: {c['input_bg']}; border: {bw}px solid {c['input_border']};
+    border-radius: {rs}px; color: {c['text']}; padding: 4px; outline: none;
+}}
+QListWidget#appList::item {{ padding: 6px 8px; border-radius: {rs}px; }}
+QListWidget#appList::item:hover {{ background: {hover}; }}
+QListWidget#appList::item:selected {{ background: {rgba(acc, 55)}; color: {c['text']}; }}
 QComboBox {{
     background: {c['input_bg']};
     border: {bw}px solid {c['input_border']};

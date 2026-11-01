@@ -53,6 +53,21 @@ VER="$(sed -n 's/^pkgver=//p' "$PKG_SRC/PKGBUILD" | tr -d '"'"'"'"')"
 [[ -n "$VER" ]]     || die "Could not read pkgver from packaging/PKGBUILD"
 info "Building $PKGNAME $VER from working tree"
 
+# ── Tests ─────────────────────────────────────────────────────────────────────
+# Includes building real (unprivileged) network namespaces for the
+# run-through-Tor feature, against a stand-in for Tor — no network, no root.
+if [[ -d "$ROOT/tests" ]]; then
+  info "Running tests ..."
+  LOG="$(mktemp -t entropy-shield-tests.XXXXXX.log)"
+  if (cd "$ROOT" && python3 -m unittest discover -s tests -p 'test_*.py' -v) >"$LOG" 2>&1; then
+    ok "$(grep -c '\.\.\. ok' "$LOG") tests passed"
+    rm -f "$LOG"
+  else
+    tail -30 "$LOG"
+    die "Tests failed — see $LOG"
+  fi
+fi
+
 # ── Fresh build directory ─────────────────────────────────────────────────────
 BUILD="$OUT/build"
 rm -rf "$BUILD" "$OUT/stage"

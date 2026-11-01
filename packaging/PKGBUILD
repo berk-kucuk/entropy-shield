@@ -1,6 +1,6 @@
 # Maintainer: Berk Kucuk <berkkucukk@proton.me>
 pkgname=entropy-shield
-pkgver=4.2.1
+pkgver=4.3.0
 pkgrel=1
 pkgdesc="Modern Linux desktop privacy stack — Tor, DNSCrypt, I2P, Onion Server — for Maze Linux"
 arch=('any')
@@ -19,6 +19,7 @@ depends=(
     'iproute2'
     'conntrack-tools'
     'curl'
+    'util-linux'   # unshare --map-user (>= 2.38) for apps run through Tor
 )
 optdepends=(
     'redsocks: transparent proxy support for I2P routing — AUR only'
@@ -56,6 +57,30 @@ package() {
 exec python3 /opt/entropy-shield/main.py "$@"
 EOF
 
+    # Run one app through Tor — as the user, no password. See core/torify.
+    install -Dm755 /dev/stdin "$pkgdir/usr/bin/entropy-shield-run" <<'EOF'
+#!/usr/bin/env bash
+# No cd: the app must start in the caller's directory. -P keeps that directory
+# off sys.path, so a "core/" folder there can never be imported instead.
+PYTHONPATH=/opt/entropy-shield exec python3 -P -m core.torify.launcher "$@"
+EOF
+
+    # Dolphin: right-click an app's .desktop file or a program → Run through Tor.
+    install -Dm644 /dev/stdin \
+        "$pkgdir/usr/share/kio/servicemenus/entropy-shield-run.desktop" <<'EOF'
+[Desktop Entry]
+Type=Service
+MimeType=application/x-desktop;application/x-executable;application/x-shellscript;
+Actions=torify;
+X-KDE-Priority=TopLevel
+
+[Desktop Action torify]
+Name=Run through Tor
+Name[tr]=Tor üzerinden çalıştır
+Icon=entropy-shield
+Exec=/usr/bin/entropy-shield-run %f
+EOF
+
     # Icon — OLED logo, one PNG per hicolor size (rendered from the 1024 master)
     install -Dm644 logos/oled.png \
         "$pkgdir/usr/share/pixmaps/entropy-shield.png"
@@ -76,6 +101,17 @@ Type=Application
 Categories=Network;Security;
 Terminal=false
 StartupWMClass=entropy-shield
+Actions=tor-browser;tor-terminal;
+
+[Desktop Action tor-browser]
+Name=Tor Browser (fresh, fail-closed)
+Name[tr]=Tor Tarayıcı (temiz, sızdırmaz)
+Exec=/usr/bin/entropy-shield-run --browser
+
+[Desktop Action tor-terminal]
+Name=Tor Terminal
+Name[tr]=Tor Terminali
+Exec=/usr/bin/entropy-shield-run --terminal
 EOF
 
     # Privileged daemon — systemd service (runs as root, drives all privileged

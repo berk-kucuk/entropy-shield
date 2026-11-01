@@ -49,6 +49,7 @@ No more editing `torrc` by hand, writing nftables rules, or restarting systemd s
 - [Screenshots](#screenshots)
 - [Features](#features)
 - [Privacy Layers](#privacy-layers)
+- [Run Any App Through Tor](#run-any-app-through-tor)
 - [Themes](#themes)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -124,7 +125,8 @@ when protected, red when not). Icons: [Lucide](https://lucide.dev) (ISC) and
 | **Automatic firewall** | nftables/iptables rules applied and removed automatically |
 | **IPv6 leak protection** | Full `ip6` table blocks all IPv6 under Tor; DNSCrypt redirects IPv6 DNS |
 | **Tor hidden service** | Publish any local directory as a `.onion` address |
-| **Isolated privacy browsers** | Firefox pre-configured for Tor or I2P without touching your normal profile |
+| **Run any app through Tor** | One app at a time, in a network namespace whose only way out is Tor — fail-closed, no root, works without connecting |
+| **Isolated privacy browsers** | A fresh browser that can only reach the internet through Tor; I2P browser pre-configured for I2P |
 | **Auto circuit renewal** | Tor identity rotates on a configurable timer with desktop notification |
 | **Desktop notifications** | System tray notifications on connect, kill switch events, and circuit renewal |
 | **MAC address randomization** | Randomize interface MAC on connect, restore on disconnect |
@@ -210,16 +212,34 @@ Notifications are intentionally minimal — only events the user might otherwise
 
 ---
 
-## Privacy Browsers — Isolated Firefox for Tor and I2P
+## Run Any App Through Tor
 
-The **TOR BROWSER** and **I2P BROWSER** buttons launch Firefox with a **fully isolated temporary profile** pre-configured for the active network. Your normal Firefox profile is never modified.
+**Run any app through Tor…**, the **Tor Browser** and **Terminal** buttons, Dolphin's *Run through Tor* right-click entry and `entropy-shield-run` all start one app with **no network of its own**. It runs in a network namespace that has no real network interface: every TCP connection is handed to Tor, every DNS query is answered inside the namespace, and everything else — UDP, IPv6, ICMP — goes nowhere. If Tor stops, the app is cut off. There is no fallback to a direct connection, because there is no direct connection to fall back to.
 
-| Button | Proxy configuration |
+```bash
+entropy-shield-run --browser                 # a fresh browser
+entropy-shield-run --terminal                # every command in it goes through Tor
+entropy-shield-run konversation              # any program
+entropy-shield-run --desktop /usr/share/applications/org.kde.kmail2.desktop
+entropy-shield-run --list                    # what is running, and where it exits
+```
+
+No root and no password: it uses unprivileged user namespaces, and the app still runs as you. It works **without connecting** Entropy Shield — a private Tor starts as your user and stops a minute after the last app closes. While Entropy Shield *is* connected, apps use its Tor instead, so traffic is never sent through Tor twice.
+
+| | |
 |---|---|
-| TOR BROWSER | SOCKS5 → `127.0.0.1:9050`, remote DNS enabled, WebRTC disabled |
-| I2P BROWSER | HTTP proxy → `127.0.0.1:4444`, SOCKS5 → `127.0.0.1:4447`, homepage set to I2P router console |
+| **DNS** | Names get placeholder addresses inside the namespace and travel to Tor *as names*, resolved by the exit relay. `.onion` addresses work. Nothing is ever resolved locally. |
+| **Bypass paths closed** | The systemd-resolved, Avahi and system D-Bus sockets are hidden from the app — glibc and some apps resolve names through them, on the host network. |
+| **One circuit per app** | Each app has its own SOCKS identity, so two apps never share a circuit. **New identity** in the window gives one app new circuits. |
+| **Exit country** | Shown for each running app (private Tor). |
+| **Time zone** | The app sees UTC unless `--keep-timezone` is given. |
+| **Browsers** | Get a new empty profile every time, with WebRTC off, deleted on exit. Without it, `firefox` would hand its window to the Firefox that is already open — outside Tor. |
+| **Hand-off warning** | An app from the menu that exits within seconds probably passed its window to a copy already running outside Tor; Entropy Shield says so instead of looking successful. |
+| **Bridges and exit nodes** | Your Settings → Tor choices apply to the private Tor too. |
 
-Both instances disable DNS prefetch, HTTPS prefetch, and media peer connections to prevent DNS and IP leaks.
+**What it cannot do:** if the app asks *another* program to open something — a link opened in your normal browser, a file shared through a desktop portal — that other program is not running through Tor. And Tor hides where you are, not who you are: logging in to an account identifies you on any network.
+
+The **I2P BROWSER** button still launches Firefox with an isolated profile set to I2P's proxies (`127.0.0.1:4444` / `4447`), while I2P is connected.
 
 > **Note on DNS over HTTPS (DoH):** Browsers with DoH enabled bypass nftables rules since DoH uses port 443. Entropy Shield's privacy browser profiles disable DoH automatically. For your normal browser, disable DoH manually if you rely on DNSCrypt for DNS encryption.
 
