@@ -41,6 +41,7 @@ unchanged):
       status
 """
 from __future__ import annotations
+import contextlib
 import os
 import sys
 import json
@@ -250,6 +251,29 @@ class _Shutdown(Exception):
     """Raised inside the session loop when the daemon is asked to stop."""
 
 
+def _bind_identity(config_mod, uid: int) -> None:
+    """Point the process-wide per-user context at *uid* (0: root's own)."""
+    if uid > 0:
+        # Read the *desktop user's* settings, not root's.  Also expose the uid
+        # via SUDO_UID so helpers that resolve the invoking user's home (e.g.
+        # onion_server) keep working.
+        config_mod.use_user_config(uid)
+        os.environ["SUDO_UID"] = str(uid)
+    else:
+        config_mod.use_user_config(0)       # rebind to root's own config
+        os.environ.pop("SUDO_UID", None)
+    os.environ.pop("PKEXEC_UID", None)
+
+
+@contextlib.contextmanager
+def _session_identity(config_mod, uid: int):
+    _bind_identity(config_mod, uid)
+    try:
+        yield
+    finally:
+        _bind_identity(config_mod, 0)
+
+
 def _handle_client(conn: socket.socket) -> None:
     """Serve a single GUI client for the lifetime of its connection.
 
@@ -294,22 +318,16 @@ def _handle_client(conn: socket.socket) -> None:
     except OSError:
         uid = 0
 
-    if uid > 0:
-        # Read the *desktop user's* settings, not root's.  Also expose the uid
-        # via SUDO_UID so helpers that resolve the invoking user's home (e.g.
-        # onion_server) keep working.
-        _config.use_user_config(uid)
-        os.environ["SUDO_UID"] = str(uid)
-    else:
-        _config.use_user_config(0)          # rebind to root's own config
-        os.environ.pop("SUDO_UID", None)
-        os.environ.pop("PKEXEC_UID", None)
-
     mgr: "ConnectionManager | None" = None
     connected = False
 
     try:
-        with _session_lock:
+        # Who this session is for is process-global state (the config location
+        # and SUDO_UID, which onion_server, browser and firewall read). It is
+        # bound only once this session holds the lock and cleared before the
+        # lock is released (audit ES2): bound before, a client waiting for the
+        # lock would already have switched the running session to its user.
+        with _session_lock, _session_identity(_config, uid):
             _log("[RUNNER] started")
 
             while True:

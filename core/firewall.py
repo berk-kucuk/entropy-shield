@@ -118,15 +118,27 @@ def _resolve_uid(uid_or_user: str) -> str | None:
 
 
 def _per_app_rules() -> tuple[list[str], list[str]]:
-    """Return (bypass_uids, block_uids) from config."""
+    """Return (bypass_uids, block_uids) from config.
+
+    The rules come from the CONNECTING user's config, but the firewall they
+    end up in is system-wide (audit ES1). A desktop user may decide how their
+    own uid is routed — not exempt root, the Ghost account or another person
+    on the same machine from the Tor kill switch. So for a non-root client
+    only rules naming that client's own uid are kept; root (the daemon's own
+    config) may name anyone.
+    """
     from .config import cfg as _cfg
     par = _cfg().get("per_app_routing")
     if not par.get("enabled"):
         return [], []
+    owner = _real_user()
+    own_uid = str(owner[0]) if owner else None
     bypass, block = [], []
     for rule in par.get("rules", []):
         uid = _resolve_uid(str(rule.get("uid_or_user", "")))
         if uid is None:
+            continue
+        if own_uid is not None and uid != own_uid:
             continue
         action = rule.get("action", "tor")
         if action == "direct":

@@ -214,12 +214,34 @@ def request(op: dict) -> dict:
 # ── notifications ────────────────────────────────────────────────────────────
 
 class Notifier:
-    def __init__(self, gui: bool):
+    """Progress for the user: on stderr, or — with a log file — written there
+    for the terminal to show later, with only a one-line live status (redrawn
+    in place, erased before the app starts) on stderr."""
+
+    def __init__(self, gui: bool, log: str | None = None):
         self.gui = gui and bool(shutil.which("notify-send"))
         self._id = ""
+        self.log = log
+        self._live = bool(log) and sys.stderr.isatty()
+
+    def clear_live(self) -> None:
+        if self._live:
+            sys.stderr.write("\r\033[2K")
+            sys.stderr.flush()
 
     def __call__(self, text: str, urgent: bool = False) -> None:
-        print(text, file=sys.stderr, flush=True)
+        if self.log and not urgent:
+            try:
+                with open(self.log, "a", encoding="utf-8") as f:
+                    f.write(text + "\n")
+            except OSError:
+                pass
+            if self._live:
+                sys.stderr.write("\r\033[2K" + text)
+                sys.stderr.flush()
+        else:
+            self.clear_live()
+            print(text, file=sys.stderr, flush=True)
         if not self.gui:
             return
         cmd = ["notify-send", "--app-name=Entropy Shield", "--icon=entropy-shield",
@@ -280,6 +302,14 @@ def run(name: str, argv: list[str], keep_timezone: bool = False,
     with os.fdopen(fd, "w") as cf:
         json.dump(cfg, cf)
 
+    if notify.log:
+        # The app is about to own the terminal: say it is running now (the
+        # line lands in the log the terminal shows after the shell's own
+        # start-up output) and erase the live status line first.
+        notify(msg("started", app=name,
+                   via=msg("via_system") if reply.get("via") == "system" else ""))
+        notify.clear_live()
+
     proc = subprocess.Popen(
         ["unshare", "--user", "--map-root-user", "--net", "--mount", "--pid", "--fork",
          "--mount-proc", "--kill-child", sys.executable, "-P", "-m", "core.torify.netns",
@@ -296,7 +326,7 @@ def run(name: str, argv: list[str], keep_timezone: bool = False,
                 ev = json.loads(raw)
             except ValueError:
                 continue
-            if ev.get("event") == "started":
+            if ev.get("event") == "started" and not notify.log:
                 notify(msg("started", app=name,
                            via=msg("via_system") if reply.get("via") == "system" else ""))
             elif ev.get("event") == "error":
@@ -338,6 +368,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="a terminal whose commands go through Tor")
     ap.add_argument("--list", action="store_true", help="list apps running through Tor")
     ap.add_argument("--new-identity", metavar="SESSION", help="new Tor circuits for an app")
+    ap.add_argument("--log", metavar="FILE",
+                    help="write progress to FILE instead of the terminal, which then only "
+                         "shows a one-line live status (Maze Terminal prints FILE after the "
+                         "shell has started)")
     ap.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args(argv)
 
@@ -347,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.new_identity:
         return 0 if request({"op": "new_identity", "session": args.new_identity}).get("ok") else 1
 
-    notify = Notifier(gui=not sys.stderr.isatty())
+    notify = Notifier(gui=not sys.stderr.isatty(), log=args.log)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     # Dolphin's "Run through Tor" passes the file it was used on.
     if not args.desktop and len(command) == 1 and command[0].endswith(".desktop") \
